@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Indexing - CSV Importer</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Sidebar -->
+            <nav id="sidebar" class="col-md-3 col-lg-2 d-md-block bg-dark sidebar collapse">
+                <div class="position-sticky pt-3">
+                    <!-- Logo/Header -->
+                    <div class="sidebar-header text-center mb-4">
+                        <h4 class="text-white">
+                            <i class="fas fa-file-csv text-primary"></i>
+                            CSV Importer
+                        </h4>
+                    </div>
+                    
+                    <!-- Navigation Menu -->
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/">
+                                <i class="fas fa-home me-2"></i>
+                                Dashboard
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active text-white" href="/file-indexing">
+                                <i class="fas fa-folder-open me-2"></i>
+                                File Indexing
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/excel-converter">
+                                <i class="fas fa-file-excel me-2"></i>
+                                Excel Converter
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/file-history">
+                                <i class="fas fa-history me-2"></i>
+                                File History
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/pra">
+                                <i class="fas fa-chart-line me-2"></i>
+                                PRA
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/pic">
+                                <i class="fas fa-image me-2"></i>
+                                PIC
+                            </a>
+                        </li>
+                        
+                        <hr class="text-secondary">
+                        
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/settings">
+                                <i class="fas fa-cog me-2"></i>
+                                Settings
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/help">
+                                <i class="fas fa-question-circle me-2"></i>
+                                Help
+                            </a>
+                        </li>
+                    </ul>
+                    
+                    <!-- Footer -->
+                    <div class="sidebar-footer mt-5 pt-3 border-top border-secondary">
+                        <small class="text-muted d-block text-center">
+                            Version 1.0.0
+                        </small>
+                    </div>
+                </div>
+            </nav>
+
+            <!-- Main Content -->
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+                <!-- Top Navigation Bar -->
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">
+                        <button class="btn btn-outline-secondary d-md-none me-3" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar">
+                            <i class="fas fa-bars"></i>
+                        </button>
+                        <i class="fas fa-folder-open me-2"></i>
+                        File Indexing
+                    </h1>
+                </div>
+
+                <!-- Content Area -->
+                <div class="content-area">
+                    <!-- Upload Section -->
+                    <div id="upload-section" class="mb-4">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-upload me-2"></i>
+                                    Upload CSV File for Indexing
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="row">
+                                    <div class="col-md-8">
+                                        <p class="text-muted mb-3">
+                                            Upload your CSV file containing file indexing data. Expected columns: Registry, Batch No, File Number, File Title, District, LGA, etc.
+                                        </p>
+                                        
+                                        <div class="mb-3">
+                                            <input type="file" class="form-control" id="csvFile" accept=".csv" />
+                                        </div>
+                                        
+                                        <button type="button" class="btn btn-primary" id="uploadBtn" disabled>
+                                            <i class="fas fa-upload me-2"></i>
+                                            Upload & Preview
+                                        </button>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="alert alert-info">
+                                            <h6><i class="fas fa-info-circle me-2"></i>Expected CSV Format:</h6>
+                                            <ul class="small mb-0">
+                                                <li>Registry</li>
+                                                <li>Batch No</li>
+                                                <li>File Number</li>
+                                                <li>File Title</li>
+                                                <li>District</li>
+                                                <li>LGA</li>  
+                                                <li>Plot Number</li>
+                                                <li>TP No</li>
+                                                <li>LPKN No</li>
+                                                <li>CoFO Date</li>
+                                                <li>Serial No</li>
+                                                <li>Page No</li>
+                                                <li>Vol No</li>
+                                                <li>Deeds Time</li>
+                                                <li>Deeds Date</li>
+                                            </ul>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Progress Section -->
+                    <div id="progress-section" class="mb-4" style="display: none;">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="d-flex align-items-center">
+                                    <div class="spinner-border text-primary me-3" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                    <div>
+                                        <h6 class="mb-0">Processing CSV file...</h6>
+                                        <small class="text-muted">Please wait while we analyze your data</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Preview Section -->
+                    <div id="preview-section" class="mb-4" style="display: none;">
+                        <!-- Stats Summary -->
+                        <div class="row mb-4">
+                            <div class="col-md-3">
+                                <div class="card text-center">
+                                    <div class="card-body">
+                                        <i class="fas fa-file-alt text-info mb-2" style="font-size: 2rem;"></i>
+                                        <h5 class="card-title" id="total-records">0</h5>
+                                        <p class="card-text text-muted">Total Records</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="card text-center">
+                                    <div class="card-body">
+                                        <i class="fas fa-exclamation-triangle text-warning mb-2" style="font-size: 2rem;"></i>
+                                        <h5 class="card-title" id="multiple-occurrences">0</h5>
+                                        <p class="card-text text-muted">Multiple Occurrences</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="card text-center">
+                                    <div class="card-body">
+                                        <i class="fas fa-check-circle text-success mb-2" style="font-size: 2rem;"></i>
+                                        <h5 class="card-title" id="valid-records">0</h5>
+                                        <p class="card-text text-muted">Valid Records</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="card text-center">
+                                    <div class="card-body">
+                                        <i class="fas fa-database text-primary mb-2" style="font-size: 2rem;"></i>
+                                        <h5 class="card-title">Ready</h5>
+                                        <p class="card-text text-muted">Import Status</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Preview Table -->
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-eye me-2"></i>
+                                    Preview Data
+                                </h5>
+                                <div>
+                                    <button type="button" class="btn btn-sm btn-secondary me-2" id="selectAllBtn">
+                                        <i class="fas fa-check-square"></i> Select All
+                                    </button>
+                                    <button type="button" class="btn btn-sm btn-primary" id="importBtn">
+                                        <i class="fas fa-database me-1"></i>
+                                        Import to Database
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="card-body p-0">
+                                <ul class="nav nav-tabs" id="previewTabs" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active" id="preview-table-tab" data-bs-toggle="tab" data-bs-target="#preview-table-pane" type="button" role="tab" aria-controls="preview-table-pane" aria-selected="true">
+                                            <i class="fas fa-table me-1"></i> Preview & Edit
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="grouping-preview-tab" data-bs-toggle="tab" data-bs-target="#grouping-preview-pane" type="button" role="tab" aria-controls="grouping-preview-pane" aria-selected="false">
+                                            <i class="fas fa-layer-group me-1"></i> Grouping Match Preview
+                                        </button>
+                                    </li>
+                                </ul>
+                                <div class="tab-content">
+                                    <div class="tab-pane fade show active" id="preview-table-pane" role="tabpanel" aria-labelledby="preview-table-tab">
+                                        <div class="table-responsive">
+                                            <table class="table table-hover mb-0" id="previewTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="50">
+                                                            <input type="checkbox" id="selectAllCheckbox">
+                                                        </th>
+                                                        <th width="60">#</th>
+                                                        <th>File Number</th>
+                                                        <th>Registry</th>
+                                                        <th>Batch No</th>
+                                                        <th>File Title</th>
+                                                        <th>District</th>
+                                                        <th>LGA</th>
+                                                        <th>Plot Number</th>
+                                                        <th>TP No</th>
+                                                        <th>LPKN No</th>
+                                                        <th>CoFO Date</th>
+                                                        <th>Serial No</th>
+                                                        <th>Page No</th>
+                                                        <th>Vol No</th>
+                                                        <th>Deeds Time</th>
+                                                        <th>Deeds Date</th>
+                                                        <th width="120" class="text-center actions-column">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="previewTableBody">
+                                                    <!-- Dynamic content will be inserted here -->
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                        <div class="card-footer border-top d-flex flex-column flex-lg-row align-items-lg-center justify-content-lg-between gap-3">
+                                            <div class="d-flex align-items-center gap-2">
+                                                <label for="pageSizeSelect" class="form-label form-label-sm mb-0 text-muted">Rows per page</label>
+                                                <select id="pageSizeSelect" class="form-select form-select-sm w-auto"></select>
+                                            </div>
+                                            <div class="text-muted small" id="paginationInfo">No records to display</div>
+                                            <nav aria-label="Preview table pagination">
+                                                <ul class="pagination pagination-sm mb-0" id="paginationControls"></ul>
+                                            </nav>
+                                        </div>
+                                    </div>
+                                    <div class="tab-pane fade" id="grouping-preview-pane" role="tabpanel" aria-labelledby="grouping-preview-tab">
+                                        <div class="p-3">
+                                            <div class="row gx-3 gy-2 mb-3" id="groupingSummary">
+                                                <div class="col-md-4">
+                                                    <div class="card shadow-sm border-success-subtle">
+                                                        <div class="card-body py-3">
+                                                            <h6 class="text-success mb-1">Matched</h6>
+                                                            <div class="fw-bold" id="groupingMatchedCount">0</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <div class="card shadow-sm border-warning-subtle">
+                                                        <div class="card-body py-3">
+                                                            <h6 class="text-warning mb-1">Skipped</h6>
+                                                            <div class="fw-bold" id="groupingSkippedCount">0</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="col-md-4">
+                                                    <div class="card shadow-sm border-danger-subtle">
+                                                        <div class="card-body py-3">
+                                                            <h6 class="text-danger mb-1">Missing</h6>
+                                                            <div class="fw-bold" id="groupingMissingCount">0</div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="table-responsive">
+                                                <table class="table table-sm align-middle" id="groupingPreviewTable">
+                                                    <thead class="table-light">
+                                                        <tr>
+                                                            <th>File Number</th>
+                                                            <th>Status</th>
+                                                            <th>Shelf Rack</th>
+                                                            <th>Grouping Registry</th>
+                                                            <th>Grouping Number</th>
+                                                            <th>Notes</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody id="groupingPreviewBody">
+                                                        <!-- Filled via JavaScript -->
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Import Progress Modal -->
+                    <div class="modal fade" id="importProgressModal" tabindex="-1">
+                        <div class="modal-dialog modal-lg">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title">
+                                        <i class="fas fa-database me-2"></i>
+                                        Importing File Indexing Data
+                                    </h5>
+                                </div>
+                                <div class="modal-body">
+                                    <div class="progress mb-3" style="height: 25px;">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                             id="importProgressBar" style="width: 0%">0%</div>
+                                    </div>
+                                    <div class="d-flex justify-content-between">
+                                        <span id="importProgressText">Preparing import...</span>
+                                        <span id="importProgressCount">0 of 0 records</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Custom JS -->
+    <script src="/static/js/main.js"></script>
+    <script src="/static/js/file-indexing.js"></script>
+</body>
+</html>
