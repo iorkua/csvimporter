@@ -12,7 +12,7 @@ class ExcelConverter {
         // File input change
         fileInput.addEventListener('change', (e) => this.handleFileSelect(e.target.files[0]));
 
-        // Drag and drop
+        // Drag and drop 
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadArea.classList.add('dragover');
