@@ -6,6 +6,8 @@
 #propertyRecordsTable,
 #fileNumbersTable,
 #historyRecordsTable,
+#historyCofoTable,
+#historyFileNumberQcTable,
 #historyMovementsTable,
 #historyNotesTable {
     font-size: 12px;
@@ -18,11 +20,16 @@
 #fileNumbersTable td,
 #historyRecordsTable th,
 #historyRecordsTable td,
+#historyCofoTable th,
+#historyCofoTable td,
+#historyFileNumberQcTable th,
+#historyFileNumberQcTable td,
 #historyMovementsTable th,
 #historyMovementsTable td,
 #historyNotesTable th,
 #historyNotesTable td {
-    white-space: nowrap;
+    white-space: nowrap !important;
+    word-break: normal !important;
     text-overflow: ellipsis;
     overflow: hidden;
     padding: 6px 6px;
@@ -71,6 +78,45 @@
 .btn-group-sm .btn {
     padding: 0.25rem 0.5rem;
     font-size: 0.75rem;
+}
+
+.inline-editable {
+    cursor: pointer;
+    position: relative;
+    transition: background-color 0.1s ease;
+}
+
+.inline-editable:hover,
+.inline-editable:focus {
+    background-color: rgba(13, 110, 253, 0.08);
+    outline: none;
+}
+
+.inline-editable.inline-editing {
+    background-color: rgba(13, 110, 253, 0.12);
+}
+
+.inline-edit-input {
+    width: 100%;
+    min-width: 0;
+}
+
+.inline-saving {
+    position: relative;
+}
+
+.inline-saving::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 1px dashed rgba(13, 110, 253, 0.5);
+    border-radius: 2px;
+    pointer-events: none;
+}
+
+.history-delete-btn {
+    white-space: nowrap;
+    min-width: 88px;
 }
 
 /* Sidebar Styling */
@@ -315,6 +361,7 @@ main {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+
 
 #previewTable td.editable-cell {
     cursor: pointer;

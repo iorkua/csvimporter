@@ -14,7 +14,7 @@ import uuid
 import csv
 import io
 import zipfile
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Literal
 from datetime import datetime
 from app.models.database import get_db_connection, FileIndexing, SessionLocal
 from pydantic import BaseModel
@@ -1197,6 +1197,17 @@ class QCFixRequest(BaseModel):
     fixes: List[QCFixPayload]
 
 
+class FileHistoryRecordUpdate(BaseModel):
+    record_type: Literal['records', 'cofo']
+    index: int
+    field: str
+    value: Optional[str] = None
+
+
+class FileHistoryRecordDelete(BaseModel):
+    index: int
+
+
 @app.post("/api/qc/apply-fixes/{session_id}")
 async def apply_qc_fixes(session_id: str, payload: QCFixRequest):
     """Apply QC fixes to session data"""
@@ -1491,6 +1502,204 @@ def _detect_file_history_duplicates(records: List[Dict[str, Any]]) -> Dict[str, 
     return _detect_pra_duplicates(records)
 
 
+def _set_property_record_field(
+    record: Dict[str, Any],
+    cofo_record: Optional[Dict[str, Any]],
+    field: str,
+    value: Optional[str]
+) -> None:
+    normalized = _normalize_string(value)
+
+    if field == 'mlsFNo':
+        record['mlsFNo'] = normalized
+        record['fileno'] = normalized
+        record['file_number'] = normalized
+        if cofo_record is not None:
+            cofo_record['mlsFNo'] = normalized
+    elif field == 'transaction_type':
+        record['transaction_type'] = normalized
+        record['instrument_type'] = normalized
+        if cofo_record is not None:
+            cofo_record['transaction_type'] = normalized
+            cofo_record['instrument_type'] = normalized
+    elif field == 'Assignor':
+        record['Assignor'] = normalized
+        record['Grantor'] = normalized
+        record['grantor_assignor'] = normalized
+        if cofo_record is not None:
+            cofo_record['Assignor'] = normalized
+            cofo_record['Grantor'] = normalized
+    elif field == 'Assignee':
+        record['Assignee'] = normalized
+        record['Grantee'] = normalized
+        record['grantee_assignee'] = normalized
+        if cofo_record is not None:
+            cofo_record['Assignee'] = normalized
+            cofo_record['Grantee'] = normalized
+    elif field == 'land_use':
+        record['land_use'] = normalized
+    elif field == 'location':
+        record['location'] = normalized
+        record['property_description'] = normalized
+        if cofo_record is not None:
+            cofo_record['location'] = normalized
+            cofo_record['property_description'] = normalized
+    elif field == 'transaction_date':
+        record['transaction_date'] = normalized
+        record['transaction_date_raw'] = normalized
+        if cofo_record is not None:
+            cofo_record['transaction_date'] = normalized
+            cofo_record['transaction_date_raw'] = normalized
+    elif field == 'serialNo':
+        record['serialNo'] = normalized
+        record['SerialNo'] = normalized
+        if cofo_record is not None:
+            cofo_record['serialNo'] = normalized
+    elif field == 'pageNo':
+        record['pageNo'] = normalized
+        if cofo_record is not None:
+            cofo_record['pageNo'] = normalized
+    elif field == 'volumeNo':
+        record['volumeNo'] = normalized
+        if cofo_record is not None:
+            cofo_record['volumeNo'] = normalized
+    elif field == 'reg_date':
+        record['reg_date'] = normalized
+        record['reg_date_raw'] = normalized
+        record['date_created'] = normalized
+        if cofo_record is not None:
+            cofo_record['reg_date'] = normalized
+            cofo_record['reg_date_raw'] = normalized
+            cofo_record['cofo_date'] = normalized
+    elif field == 'created_by':
+        record['created_by'] = normalized
+        record['CreatedBy'] = normalized
+        if cofo_record is not None:
+            cofo_record['created_by'] = normalized
+
+
+def _set_cofo_record_field(
+    cofo_record: Dict[str, Any],
+    property_record: Optional[Dict[str, Any]],
+    field: str,
+    value: Optional[str]
+) -> None:
+    normalized = _normalize_string(value)
+
+    if field == 'mlsFNo':
+        cofo_record['mlsFNo'] = normalized
+        if property_record is not None:
+            property_record['mlsFNo'] = normalized
+            property_record['fileno'] = normalized
+            property_record['file_number'] = normalized
+    elif field == 'transaction_type':
+        cofo_record['transaction_type'] = normalized
+        cofo_record['instrument_type'] = normalized
+        if property_record is not None:
+            property_record['transaction_type'] = normalized
+            property_record['instrument_type'] = normalized
+    elif field == 'Assignor':
+        cofo_record['Assignor'] = normalized
+        cofo_record['Grantor'] = normalized
+        if property_record is not None:
+            property_record['Assignor'] = normalized
+            property_record['Grantor'] = normalized
+            property_record['grantor_assignor'] = normalized
+    elif field == 'Assignee':
+        cofo_record['Assignee'] = normalized
+        cofo_record['Grantee'] = normalized
+        if property_record is not None:
+            property_record['Assignee'] = normalized
+            property_record['Grantee'] = normalized
+            property_record['grantee_assignee'] = normalized
+    elif field == 'transaction_date':
+        cofo_record['transaction_date'] = normalized
+        cofo_record['transaction_date_raw'] = normalized
+        if property_record is not None:
+            property_record['transaction_date'] = normalized
+            property_record['transaction_date_raw'] = normalized
+    elif field == 'transaction_time':
+        cofo_record['transaction_time'] = normalized
+        cofo_record['transaction_time_raw'] = normalized
+    elif field == 'serialNo':
+        cofo_record['serialNo'] = normalized
+        if property_record is not None:
+            property_record['serialNo'] = normalized
+            property_record['SerialNo'] = normalized
+    elif field == 'pageNo':
+        cofo_record['pageNo'] = normalized
+        if property_record is not None:
+            property_record['pageNo'] = normalized
+    elif field == 'volumeNo':
+        cofo_record['volumeNo'] = normalized
+        if property_record is not None:
+            property_record['volumeNo'] = normalized
+    elif field == 'regNo':
+        cofo_record['regNo'] = normalized
+        if property_record is not None:
+            property_record['regNo'] = normalized
+    elif field == 'reg_date':
+        cofo_record['reg_date'] = normalized
+        cofo_record['reg_date_raw'] = normalized
+        cofo_record['cofo_date'] = normalized
+        if property_record is not None:
+            property_record['reg_date'] = normalized
+            property_record['reg_date_raw'] = normalized
+            property_record['date_created'] = normalized
+
+
+def _apply_file_history_field_update(
+    property_records: List[Dict[str, Any]],
+    cofo_records: List[Dict[str, Any]],
+    index: int,
+    record_type: Literal['records', 'cofo'],
+    field: str,
+    value: Optional[str]
+) -> None:
+    if record_type == 'records':
+        if 0 <= index < len(property_records):
+            cofo_record = cofo_records[index] if index < len(cofo_records) else None
+            _set_property_record_field(property_records[index], cofo_record, field, value)
+    else:
+        if 0 <= index < len(cofo_records):
+            property_record = property_records[index] if index < len(property_records) else None
+            _set_cofo_record_field(cofo_records[index], property_record, field, value)
+
+
+def _refresh_file_history_session_state(session_data: Dict[str, Any]) -> Dict[str, Any]:
+    property_records = session_data.get('property_records', [])
+    cofo_records = session_data.get('cofo_records', [])
+
+    qc_issues = _run_file_history_qc_validation(property_records)
+    duplicates = session_data.get('duplicates') or {'csv': [], 'database': []}
+
+    for idx, record in enumerate(property_records):
+        has_issue = record.get('hasIssues', False)
+        if idx < len(cofo_records):
+            cofo_records[idx]['hasIssues'] = has_issue
+
+    session_data['property_records'] = property_records
+    session_data['cofo_records'] = cofo_records
+    session_data['qc_issues'] = qc_issues
+    session_data['duplicates'] = duplicates
+
+    total_records = len(property_records)
+    ready_records = sum(1 for rec in property_records if not rec.get('hasIssues'))
+    duplicate_count = len(duplicates.get('csv', [])) + len(duplicates.get('database', []))
+    validation_issues = sum(len(items) for items in qc_issues.values())
+
+    return {
+        'property_records': property_records,
+        'cofo_records': cofo_records,
+        'issues': qc_issues,
+        'duplicates': duplicates,
+        'total_records': total_records,
+        'duplicate_count': duplicate_count,
+        'validation_issues': validation_issues,
+        'ready_records': ready_records
+    }
+
+
 # ========== FILE HISTORY IMPORT ENDPOINTS ==========
 
 @app.post("/api/upload-file-history")
@@ -1536,7 +1745,7 @@ async def upload_file_history(file: UploadFile = File(...)):
                 cofo_records[idx]['prop_id'] = prop_id
 
         qc_issues = _run_file_history_qc_validation(property_records)
-        duplicates = _detect_file_history_duplicates(property_records)
+        duplicates = {"csv": [], "database": []}
 
         for idx, record in enumerate(property_records):
             has_issues = record.get('hasIssues', False)
@@ -1544,7 +1753,7 @@ async def upload_file_history(file: UploadFile = File(...)):
                 cofo_records[idx]['hasIssues'] = has_issues
 
         total_records = len(property_records)
-        duplicate_count = len(duplicates.get('csv', [])) + len(duplicates.get('database', []))
+        duplicate_count = 0
         validation_issues = sum(len(items) for items in qc_issues.values())
         ready_records = sum(1 for rec in property_records if not rec.get('hasIssues'))
 
@@ -1578,6 +1787,85 @@ async def upload_file_history(file: UploadFile = File(...)):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+
+
+@app.post("/api/file-history/update/{session_id}")
+async def update_file_history_record(session_id: str, payload: FileHistoryRecordUpdate):
+    """Update a single field for a File History preview record."""
+
+    if not hasattr(app, 'sessions') or session_id not in app.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = app.sessions[session_id]
+    if session_data.get('type') != 'file-history':
+        raise HTTPException(status_code=400, detail="Invalid session type for File History update")
+
+    _apply_file_history_field_update(
+        session_data.get('property_records', []),
+        session_data.get('cofo_records', []),
+        payload.record_index,
+        payload.record_type,
+        payload.field,
+        payload.value
+    )
+
+    summary = _refresh_file_history_session_state(session_data)
+
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "property_records": summary['property_records'],
+        "cofo_records": summary['cofo_records'],
+        "issues": summary['issues'],
+        "duplicates": summary['duplicates'],
+        "total_records": summary['total_records'],
+        "duplicate_count": summary['duplicate_count'],
+        "validation_issues": summary['validation_issues'],
+        "ready_records": summary['ready_records']
+    }
+
+
+@app.post("/api/file-history/delete/{session_id}")
+async def delete_file_history_record(session_id: str, payload: FileHistoryRecordDelete):
+    """Delete a File History preview row from the in-memory session."""
+
+    if not hasattr(app, 'sessions') or session_id not in app.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = app.sessions[session_id]
+    if session_data.get('type') != 'file-history':
+        raise HTTPException(status_code=400, detail="Invalid session type for File History delete")
+
+    property_records = session_data.get('property_records', [])
+    cofo_records = session_data.get('cofo_records', [])
+
+    index = payload.record_index
+
+    if payload.record_type == 'records':
+        if 0 <= index < len(property_records):
+            property_records.pop(index)
+        if 0 <= index < len(cofo_records):
+            cofo_records.pop(index)
+    else:
+        if 0 <= index < len(cofo_records):
+            cofo_records.pop(index)
+        if 0 <= index < len(property_records):
+            property_records.pop(index)
+
+    summary = _refresh_file_history_session_state(session_data)
+
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "property_records": summary['property_records'],
+        "cofo_records": summary['cofo_records'],
+        "issues": summary['issues'],
+        "duplicates": summary['duplicates'],
+        "total_records": summary['total_records'],
+        "duplicate_count": summary['duplicate_count'],
+        "validation_issues": summary['validation_issues'],
+        "ready_records": summary['ready_records']
+    }
 
 
 @app.post("/api/import-file-history/{session_id}")
