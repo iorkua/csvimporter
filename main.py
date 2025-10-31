@@ -62,6 +62,12 @@ async def file_history_import(request: Request):
     return templates.TemplateResponse("file_history_import.html", {"request": request})
 
 
+@app.get("/pic", response_class=HTMLResponse)
+async def property_index_card(request: Request):
+    """Property Index Card (PIC) workspace"""
+    return templates.TemplateResponse("property_index_card.html", {"request": request})
+
+
 @app.post("/api/upload-csv")
 async def upload_csv(file: UploadFile = File(...)):
     """Upload and process CSV/Excel file for file indexing preview"""
