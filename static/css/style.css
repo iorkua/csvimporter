@@ -4,7 +4,10 @@
 
 /* PRA Tables - No text wrapping */
 #propertyRecordsTable,
-#fileNumbersTable {
+#fileNumbersTable,
+#historyRecordsTable,
+#historyMovementsTable,
+#historyNotesTable {
     font-size: 12px;
     min-width: 1600px;
 }
@@ -12,7 +15,13 @@
 #propertyRecordsTable th,
 #propertyRecordsTable td,
 #fileNumbersTable th,
-#fileNumbersTable td {
+#fileNumbersTable td,
+#historyRecordsTable th,
+#historyRecordsTable td,
+#historyMovementsTable th,
+#historyMovementsTable td,
+#historyNotesTable th,
+#historyNotesTable td {
     white-space: nowrap;
     text-overflow: ellipsis;
     overflow: hidden;
@@ -21,7 +30,10 @@
 }
 
 #propertyRecordsTable th,
-#fileNumbersTable th {
+#fileNumbersTable th,
+#historyRecordsTable th,
+#historyMovementsTable th,
+#historyNotesTable th {
     background-color: #343a40 !important;
     color: white !important;
     font-weight: 600;
@@ -29,7 +41,10 @@
 }
 
 #propertyRecordsTable td,
-#fileNumbersTable td {
+#fileNumbersTable td,
+#historyRecordsTable td,
+#historyMovementsTable td,
+#historyNotesTable td {
     border-color: #dee2e6;
     max-width: 150px;
 }

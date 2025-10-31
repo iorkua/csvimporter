@@ -14,7 +14,7 @@ import uuid
 import csv
 import io
 import zipfile
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from app.models.database import get_db_connection, FileIndexing, SessionLocal
 from pydantic import BaseModel
@@ -54,6 +54,12 @@ async def file_indexing(request: Request):
 async def pra_import(request: Request):
     """Property Records Assistance (PRA) import page"""
     return templates.TemplateResponse("pra_import.html", {"request": request})
+
+
+@app.get("/file-history", response_class=HTMLResponse)
+async def file_history_import(request: Request):
+    """File history import UI placeholder"""
+    return templates.TemplateResponse("file_history_import.html", {"request": request})
 
 
 @app.post("/api/upload-csv")
@@ -1229,6 +1235,456 @@ async def apply_qc_fixes(session_id: str, payload: QCFixRequest):
     }
 
 
+# ========== FILE HISTORY HELPER FUNCTIONS ==========
+
+def _parse_file_history_date(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Parse a date value from File History data into ISO format (YYYY-MM-DD)."""
+    raw = _normalize_string(value)
+    if not raw:
+        return None, None
+
+    try:
+        parsed = pd.to_datetime(raw, dayfirst=True, errors='coerce')
+        if pd.isna(parsed):
+            return None, raw
+        return parsed.strftime('%Y-%m-%d'), raw
+    except Exception:
+        return None, raw
+
+
+def _parse_file_history_time(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Parse time strings such as '2:45 PM' or '14:25' into HH:MM format."""
+    raw = _normalize_string(value)
+    if not raw:
+        return None, None
+
+    try:
+        parsed = pd.to_datetime(raw, errors='coerce')
+        if pd.isna(parsed):
+            return None, raw
+        return parsed.strftime('%H:%M'), raw
+    except Exception:
+        return None, raw
+
+
+def _build_file_history_cofo_record(
+    *,
+    file_number: Optional[str],
+    transaction_type: Optional[str],
+    assignor: Optional[str],
+    assignee: Optional[str],
+    land_use: Optional[str],
+    location: Optional[str],
+    transaction_date: Optional[str],
+    transaction_date_raw: Optional[str],
+    transaction_time: Optional[str],
+    transaction_time_raw: Optional[str],
+    serial_no: Optional[str],
+    page_no: Optional[str],
+    volume_no: Optional[str],
+    reg_no: Optional[str],
+    created_by: Optional[str],
+    reg_date: Optional[str],
+    reg_date_raw: Optional[str]
+) -> Dict[str, Any]:
+    return {
+        'mlsFNo': file_number,
+        'transaction_type': transaction_type,
+        'instrument_type': transaction_type,
+        'Grantor': assignor,
+        'Grantee': assignee,
+        'Assignor': assignor,
+        'Assignee': assignee,
+        'land_use': land_use,
+        'property_description': location,
+        'location': location,
+        'transaction_date': transaction_date,
+        'transaction_date_raw': transaction_date_raw,
+        'transaction_time': transaction_time,
+        'transaction_time_raw': transaction_time_raw,
+        'serialNo': serial_no,
+        'pageNo': page_no,
+        'volumeNo': volume_no,
+        'regNo': reg_no,
+        'created_by': created_by,
+        'reg_date': reg_date,
+        'reg_date_raw': reg_date_raw,
+        'source': 'File History',
+        'migration_source': 'File History',
+        'migrated_by': 'File History Import',
+        'prop_id': None,
+        'hasIssues': False
+    }
+
+
+def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Process File History CSV data into property_records and CofO payloads."""
+    df.columns = df.columns.str.strip()
+
+    property_records: List[Dict[str, Any]] = []
+    cofo_records: List[Dict[str, Any]] = []
+
+    for _, row in df.iterrows():
+        file_number = _normalize_string(row.get('File Number'))
+        if not file_number:
+            continue
+
+        transaction_type = _normalize_string(row.get('Transaction Type'))
+        assignor = _normalize_string(row.get('Original Holder (Assignor)'))
+        assignee = _normalize_string(row.get('Current Holder (Assignee)'))
+        land_use = _normalize_string(row.get('Landuse'))
+        location = _normalize_string(row.get('Location'))
+
+        transaction_date, transaction_date_raw = _parse_file_history_date(row.get('Transaction Date'))
+        serial_no = _normalize_numeric_field(row.get('Serial No'))
+        page_no = _normalize_numeric_field(row.get('Page No'))
+        volume_no = _normalize_numeric_field(row.get('Vol No'))
+        reg_time, reg_time_raw = _parse_file_history_time(row.get('Reg Time'))
+        reg_date, reg_date_raw = _parse_file_history_date(row.get('Reg Date'))
+        created_by = _normalize_string(row.get('CreatedBy')) or 'System'
+        related_file_number = _normalize_string(row.get('Related File Number'))
+
+        reg_no = _build_pra_reg_no(serial_no, page_no, volume_no)
+
+        property_record = {
+            'mlsFNo': file_number,
+            'fileno': file_number,
+            'transaction_type': transaction_type,
+            'transaction_date': transaction_date,
+            'transaction_date_raw': transaction_date_raw,
+            'serialNo': serial_no,
+            'SerialNo': serial_no,
+            'pageNo': page_no,
+            'volumeNo': volume_no,
+            'regNo': reg_no,
+            'instrument_type': transaction_type,
+            'Grantor': assignor,
+            'Assignor': assignor,
+            'Grantee': assignee,
+            'Assignee': assignee,
+            'property_description': location,
+            'location': location,
+            'streetName': None,
+            'house_no': None,
+            'districtName': None,
+            'plot_no': None,
+            'LGA': None,
+            'lgsaOrCity': None,
+            'land_use': land_use,
+            'plot_size': None,
+            'source': 'File History',
+            'migration_source': 'File History',
+            'migrated_by': 'File History Import',
+            'prop_id': None,
+            'created_by': created_by,
+            'CreatedBy': created_by,
+            'date_created': reg_date,
+            'DateCreated': reg_date,
+            'reg_date': reg_date,
+            'reg_date_raw': reg_date_raw,
+            'reg_time': reg_time,
+            'reg_time_raw': reg_time_raw,
+            'related_file_number': related_file_number,
+            'created_at_display': reg_date or reg_date_raw,
+            'hasIssues': False
+        }
+
+        property_records.append(property_record)
+
+        cofo_records.append(_build_file_history_cofo_record(
+            file_number=file_number,
+            transaction_type=transaction_type,
+            assignor=assignor,
+            assignee=assignee,
+            land_use=land_use,
+            location=location,
+            transaction_date=transaction_date,
+            transaction_date_raw=transaction_date_raw,
+            transaction_time=reg_time,
+            transaction_time_raw=reg_time_raw,
+            serial_no=serial_no,
+            page_no=page_no,
+            volume_no=volume_no,
+            reg_no=reg_no,
+            created_by=created_by,
+            reg_date=reg_date,
+            reg_date_raw=reg_date_raw
+        ))
+
+    return property_records, cofo_records
+
+
+def _run_file_history_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Run PRA-style QC validation plus File History specific checks."""
+    for record in records:
+        record['hasIssues'] = False
+
+    qc_results = _run_pra_qc_validation(records)
+
+    additional_issues = {
+        'missing_required_fields': [],
+        'invalid_dates': [],
+        'missing_reg_components': []
+    }
+
+    for idx, record in enumerate(records):
+        missing_messages = []
+        if not _normalize_string(record.get('transaction_type')):
+            missing_messages.append('Transaction Type is missing')
+        if not _normalize_string(record.get('Grantor')):
+            missing_messages.append('Original Holder (Assignor) is missing')
+        if not _normalize_string(record.get('Grantee')):
+            missing_messages.append('Current Holder (Assignee) is missing')
+        if not _normalize_string(record.get('location')):
+            missing_messages.append('Location is missing')
+
+        if missing_messages:
+            additional_issues['missing_required_fields'].append({
+                'row': idx + 1,
+                'messages': missing_messages,
+                'file_number': record.get('mlsFNo')
+            })
+            record['hasIssues'] = True
+
+        serial = record.get('serialNo')
+        page = record.get('pageNo')
+        volume = record.get('volumeNo')
+        if not (serial and page and volume):
+            additional_issues['missing_reg_components'].append({
+                'row': idx + 1,
+                'file_number': record.get('mlsFNo'),
+                'description': 'Serial, Page, and Volume numbers must all be provided'
+            })
+            record['hasIssues'] = True
+
+        # Date parsing checks
+        raw_txn = record.get('transaction_date_raw')
+        txn_iso = record.get('transaction_date')
+        if raw_txn and not txn_iso:
+            additional_issues['invalid_dates'].append({
+                'row': idx + 1,
+                'file_number': record.get('mlsFNo'),
+                'field': 'transaction_date',
+                'value': raw_txn,
+                'message': 'Transaction Date could not be parsed'
+            })
+            record['hasIssues'] = True
+
+        raw_reg_date = record.get('reg_date_raw')
+        reg_iso = record.get('reg_date')
+        if raw_reg_date and not reg_iso:
+            additional_issues['invalid_dates'].append({
+                'row': idx + 1,
+                'file_number': record.get('mlsFNo'),
+                'field': 'reg_date',
+                'value': raw_reg_date,
+                'message': 'Registration Date could not be parsed'
+            })
+            record['hasIssues'] = True
+
+    qc_results.update(additional_issues)
+    return qc_results
+
+
+def _detect_file_history_duplicates(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Detect duplicates for File History records (wrapper around PRA duplicate detection)."""
+    return _detect_pra_duplicates(records)
+
+
+# ========== FILE HISTORY IMPORT ENDPOINTS ==========
+
+@app.post("/api/upload-file-history")
+async def upload_file_history(file: UploadFile = File(...)):
+    """Upload File History CSV/Excel file and prepare preview data."""
+
+    try:
+        if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+            raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+
+        session_id = str(uuid.uuid4())
+        content = await file.read()
+
+        if file.filename.endswith('.csv'):
+            dataframe = pd.read_csv(
+                io.BytesIO(content),
+                na_values=['', 'NULL', 'null', 'NaN'],
+                keep_default_na=False
+            )
+        else:
+            dataframe = pd.read_excel(
+                io.BytesIO(content),
+                na_values=['', 'NULL', 'null', 'NaN'],
+                keep_default_na=False
+            )
+
+        dataframe.dropna(how='all', inplace=True)
+        dataframe.dropna(axis=1, how='all', inplace=True)
+
+        property_records, cofo_records = _process_file_history_data(dataframe)
+
+        if not property_records:
+            raise HTTPException(status_code=400, detail="No valid File History records found in the uploaded file")
+
+        assignment_payload = [{'file_number': record.get('mlsFNo')} for record in property_records]
+        assignments = _assign_property_ids(assignment_payload)
+        for assignment in assignments:
+            idx = assignment['record_index']
+            prop_id = assignment['property_id']
+            if 0 <= idx < len(property_records):
+                property_records[idx]['prop_id'] = prop_id
+            if 0 <= idx < len(cofo_records):
+                cofo_records[idx]['prop_id'] = prop_id
+
+        qc_issues = _run_file_history_qc_validation(property_records)
+        duplicates = _detect_file_history_duplicates(property_records)
+
+        for idx, record in enumerate(property_records):
+            has_issues = record.get('hasIssues', False)
+            if 0 <= idx < len(cofo_records):
+                cofo_records[idx]['hasIssues'] = has_issues
+
+        total_records = len(property_records)
+        duplicate_count = len(duplicates.get('csv', [])) + len(duplicates.get('database', []))
+        validation_issues = sum(len(items) for items in qc_issues.values())
+        ready_records = sum(1 for rec in property_records if not rec.get('hasIssues'))
+
+        if not hasattr(app, 'sessions'):
+            app.sessions = {}
+
+        app.sessions[session_id] = {
+            "filename": file.filename,
+            "upload_time": datetime.now(),
+            "type": "file-history",
+            "property_records": property_records,
+            "cofo_records": cofo_records,
+            "qc_issues": qc_issues,
+            "duplicates": duplicates
+        }
+
+        return {
+            "session_id": session_id,
+            "filename": file.filename,
+            "total_records": total_records,
+            "duplicate_count": duplicate_count,
+            "validation_issues": validation_issues,
+            "ready_records": ready_records,
+            "property_records": property_records,
+            "cofo_records": cofo_records,
+            "duplicates": duplicates,
+            "issues": qc_issues
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+
+
+@app.post("/api/import-file-history/{session_id}")
+async def import_file_history(session_id: str):
+    """Commit File History records into property_records and CofO tables."""
+
+    if not hasattr(app, 'sessions') or session_id not in app.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = app.sessions[session_id]
+    if session_data.get('type') != 'file-history':
+        raise HTTPException(status_code=400, detail="Invalid session type for File History import")
+
+    db = SessionLocal()
+    now = datetime.utcnow()
+    property_records_count = 0
+    cofo_records_count = 0
+
+    try:
+        for record in session_data['property_records']:
+            if record.get('hasIssues'):
+                continue
+
+            payload = {
+                'mlsFNo': record.get('mlsFNo'),
+                'fileno': record.get('fileno'),
+                'transaction_type': record.get('transaction_type'),
+                'transaction_date': record.get('transaction_date') or record.get('transaction_date_raw'),
+                'serialNo': record.get('serialNo'),
+                'pageNo': record.get('pageNo'),
+                'volumeNo': record.get('volumeNo'),
+                'regNo': record.get('regNo'),
+                'instrument_type': record.get('instrument_type'),
+                'Grantor': record.get('Grantor'),
+                'Grantee': record.get('Grantee'),
+                'property_description': record.get('property_description'),
+                'location': record.get('location'),
+                'streetName': record.get('streetName'),
+                'house_no': record.get('house_no'),
+                'districtName': record.get('districtName'),
+                'plot_no': record.get('plot_no'),
+                'lgsaOrCity': record.get('lgsaOrCity'),
+                'source': record.get('source'),
+                'plot_size': record.get('plot_size'),
+                'migrated_by': record.get('migrated_by'),
+                'prop_id': record.get('prop_id'),
+                'created_by': record.get('created_by'),
+                'date_created': record.get('date_created') or record.get('reg_date'),
+                'migration_source': record.get('migration_source'),
+                'created_at_override': record.get('reg_date') or record.get('date_created')
+            }
+
+            _import_property_record(db, payload, now)
+            property_records_count += 1
+
+        for record in session_data['cofo_records']:
+            if record.get('hasIssues'):
+                continue
+
+            cofo_entry = CofO(
+                mls_fno=record.get('mlsFNo'),
+                title_type='File History',
+                transaction_type=record.get('transaction_type'),
+                instrument_type=record.get('instrument_type'),
+                transaction_date=record.get('transaction_date') or record.get('transaction_date_raw'),
+                transaction_time=record.get('transaction_time') or record.get('transaction_time_raw'),
+                serial_no=record.get('serialNo'),
+                page_no=record.get('pageNo'),
+                volume_no=record.get('volumeNo'),
+                reg_no=record.get('regNo'),
+                property_description=record.get('property_description'),
+                location=record.get('location'),
+                plot_no=None,
+                lgsa_or_city=None,
+                land_use=record.get('land_use'),
+                cofo_type=None,
+                grantor=record.get('Grantor'),
+                grantee=record.get('Grantee'),
+                cofo_date=record.get('reg_date') or record.get('reg_date_raw'),
+                prop_id=record.get('prop_id')
+            )
+
+            existing = db.query(CofO).filter(CofO.mls_fno == cofo_entry.mls_fno).first()
+            if existing:
+                _update_cofo(existing, cofo_entry)
+            else:
+                db.add(cofo_entry)
+
+            cofo_records_count += 1
+
+        db.commit()
+
+        del app.sessions[session_id]
+
+        return {
+            "success": True,
+            "imported_count": property_records_count + cofo_records_count,
+            "property_records_count": property_records_count,
+            "cofo_records_count": cofo_records_count
+        }
+
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(exc)}")
+    finally:
+        db.close()
+
 # ========== PRA HELPER FUNCTIONS ==========
 
 def _process_pra_data(df):
@@ -1435,6 +1891,24 @@ def _import_property_record(db, record, timestamp):
         SELECT id FROM property_records WHERE mlsFNo = :file_number
     """), {'file_number': record['mlsFNo']}).first()
     
+    created_at_override = record.get('created_at_override')
+    created_at_value = None
+    if created_at_override:
+        if isinstance(created_at_override, datetime):
+            created_at_value = created_at_override
+        else:
+            try:
+                created_at_value = datetime.fromisoformat(created_at_override)
+            except ValueError:
+                try:
+                    parsed = pd.to_datetime(created_at_override, errors='coerce', dayfirst=True)
+                    if not pd.isna(parsed):
+                        created_at_value = parsed.to_pydatetime()
+                except Exception:
+                    created_at_value = None
+
+    params = {k: v for k, v in record.items() if k != 'created_at_override'}
+
     if existing:
         # Update existing record
         db.execute(text("""
@@ -1460,7 +1934,7 @@ def _import_property_record(db, record, timestamp):
                 updated_at = :updated_at
             WHERE mlsFNo = :mlsFNo
         """), {
-            **record,
+            **params,
             'updated_at': timestamp
         })
     else:
@@ -1478,8 +1952,8 @@ def _import_property_record(db, record, timestamp):
                 :created_by, :date_created, :migration_source
             )
         """), {
-            **record,
-            'created_at': timestamp
+            **params,
+            'created_at': created_at_value or timestamp
         })
 
 

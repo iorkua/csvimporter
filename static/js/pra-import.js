@@ -13,6 +13,7 @@ class PRAImportManager {
             csv: [],
             database: []
         };
+        this.ACRE_TO_HECTARE = 0.40468564224;
         
         this.initializeEventListeners();
     }
@@ -311,6 +312,57 @@ class PRAImportManager {
         return String(value ?? '');
     }
 
+    formatDecimal(value, decimals = 3) {
+        if (!Number.isFinite(value)) {
+            return '';
+        }
+        const fixed = value.toFixed(decimals);
+        return fixed
+            .replace(/(\.\d*?[1-9])0+$/, '$1')
+            .replace(/\.0+$/, '')
+            .replace(/\.$/, '');
+    }
+
+    detectPlotSizeUnit(value) {
+        const lowerValue = (value || '').toString().toLowerCase();
+
+        if (/\b(ha|hectare|hectares)\b/.test(lowerValue)) {
+            return 'hectares';
+        }
+
+        if (/\b(ac|acre|acres)\b/.test(lowerValue)) {
+            return 'acres';
+        }
+
+        return null;
+    }
+
+    parsePlotSize(value) {
+        if (value === null || value === undefined) {
+            return { numericValue: null, unit: null };
+        }
+
+        if (typeof value === 'number') {
+            return { numericValue: value, unit: null };
+        }
+
+        const raw = value.toString().trim();
+        if (!raw) {
+            return { numericValue: null, unit: null };
+        }
+
+        const numberMatch = raw.match(/-?\d+(?:[.,]\d+)?/);
+        const numericValue = numberMatch ? parseFloat(numberMatch[0].replace(/,/g, '')) : Number.NaN;
+        const hasValidNumber = Number.isFinite(numericValue);
+
+        const unit = this.detectPlotSizeUnit(raw);
+
+        return {
+            numericValue: hasValidNumber ? numericValue : null,
+            unit
+        };
+    }
+
     renderTable() {
         const tableBodyId = this.currentTab === 'property-records' ? 'propertyRecordsTableBody' : 'fileNumbersTableBody';
         const tbody = document.getElementById(tableBodyId);
@@ -373,6 +425,9 @@ class PRAImportManager {
             </td>
             <td class="text-center">
                 <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-primary btn-sm" onclick="praManager.convertPlotSizeToHectares(${actualIndex})" title="Convert acres to hectares">
+                        <i class="fas fa-ruler-combined"></i>
+                    </button>
                     <button class="btn btn-outline-danger btn-sm" onclick="praManager.deleteRecord(${actualIndex})" title="Delete">
                         <i class="fas fa-trash"></i>
                     </button>
@@ -709,6 +764,57 @@ class PRAImportManager {
         bootstrap.Modal.getInstance(document.getElementById('editRecordModal')).hide();
         
         this.showAlert('Record updated successfully', 'success');
+    }
+
+    convertPlotSizeToHectares(index) {
+        const record = this.filteredData[index];
+        if (!record) {
+            return;
+        }
+
+        const plotSizeValue = record.plot_size ?? record.plotSize ?? record.PlotSize ?? '';
+        const sanitizedValue = this.sanitizeValue(plotSizeValue);
+
+        if (!sanitizedValue) {
+            this.showAlert('Plot size is empty for this record.', 'warning');
+            return;
+        }
+
+        const { numericValue, unit } = this.parsePlotSize(plotSizeValue);
+
+        if (numericValue === null) {
+            this.showAlert('Unable to determine the numeric plot size for this record.', 'warning');
+            return;
+        }
+
+        const normalizedUnit = unit ?? 'acres';
+
+        if (normalizedUnit === 'hectares') {
+            this.showAlert('Plot size is already expressed in hectares.', 'info');
+            return;
+        }
+
+        if (normalizedUnit !== 'acres') {
+            this.showAlert(`Plot size unit "${unit}" is not supported for automatic conversion yet.`, 'warning');
+            return;
+        }
+
+        const hectaresValue = numericValue * this.ACRE_TO_HECTARE;
+        const formattedHectares = this.formatDecimal(hectaresValue) || hectaresValue.toString();
+        const formattedAcres = this.formatDecimal(numericValue) || numericValue.toString();
+        const newValue = `${formattedHectares} ha`;
+
+        record.plot_size = newValue;
+        if ('plotSize' in record) {
+            record.plotSize = newValue;
+        }
+        if ('PlotSize' in record) {
+            record.PlotSize = newValue;
+        }
+
+        this.renderTable();
+        this.renderPagination();
+        this.showAlert(`Converted ${formattedAcres} acres to ${formattedHectares} ha.`, 'success');
     }
 
     deleteRecord(index) {
