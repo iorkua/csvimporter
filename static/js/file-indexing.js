@@ -8,6 +8,13 @@ class FileIndexingManager {
             rows: [],
             summary: { matched: 0, skipped: 0, missing: 0 }
         };
+        this.qcIssues = {
+            padding: [],
+            year: [],
+            spacing: [],
+            temp: []
+        };
+        this.propertyAssignments = [];
         this.selectedRows = new Set();
         this.pageSizeOptions = [10, 25, 50, 100];
         this.pageSize = 25;
@@ -117,6 +124,34 @@ class FileIndexingManager {
             newUrl.searchParams.set('session_id', this.currentSessionId);
             window.history.pushState({}, '', newUrl);
             
+            // Update QC summary from upload response
+            if (result.qc_summary) {
+                const qcSummary = result.qc_summary;
+                const totalIssues = qcSummary.total_issues || 0;
+                
+                // Update tab badge
+                const totalIssuesEl = document.getElementById('qc-total-issues');
+                if (totalIssuesEl) totalIssuesEl.textContent = totalIssues;
+                
+                // Update QC summary cards
+                const paddingEl = document.getElementById('qcPaddingCount');
+                if (paddingEl) paddingEl.textContent = qcSummary.padding_issues || 0;
+                
+                const yearEl = document.getElementById('qcYearCount');
+                if (yearEl) yearEl.textContent = qcSummary.year_issues || 0;
+                
+                const spacingEl = document.getElementById('qcSpacingCount');
+                if (spacingEl) spacingEl.textContent = qcSummary.spacing_issues || 0;
+                
+                const tempEl = document.getElementById('qcTempCount');
+                if (tempEl) tempEl.textContent = qcSummary.temp_issues || 0;
+                
+                // Show notification with QC summary
+                if (totalIssues > 0) {
+                    this.showNotification(`File uploaded! Found ${totalIssues} QC issues that can be reviewed in the QC tab.`, 'warning');
+                }
+            }
+            
             // Load preview data
             await this.loadPreviewData();
             
@@ -144,12 +179,25 @@ class FileIndexingManager {
             this.currentData = result.data;
             this.multipleOccurrences = result.multiple_occurrences;
             this.groupingPreview = result.grouping_preview || { rows: [], summary: {} };
+            
+            // Update QC data if it exists
+            if (result.qc_issues) {
+                this.qcIssues.padding = result.qc_issues.padding || [];
+                this.qcIssues.year = result.qc_issues.year || [];
+                this.qcIssues.spacing = result.qc_issues.spacing || [];
+                this.qcIssues.temp = result.qc_issues.temp || [];
+            }
+            if (result.property_assignments) {
+                this.propertyAssignments = result.property_assignments || [];
+            }
+            
             this.selectedRows.clear();
             this.currentPage = 1;
             
             this.updateStatistics(result);
             this.renderPreviewTable();
             this.renderGroupingPreview();
+            this.renderQCIssues();
             this.showSection('preview-section');
             
         } catch (error) {
@@ -235,6 +283,269 @@ class FileIndexingManager {
         return `<span class="badge bg-${config.theme}">${config.label}</span>`;
     }
 
+    renderQCIssues() {
+        const safeIssues = {
+            padding: Array.isArray(this.qcIssues.padding) ? this.qcIssues.padding : [],
+            year: Array.isArray(this.qcIssues.year) ? this.qcIssues.year : [],
+            spacing: Array.isArray(this.qcIssues.spacing) ? this.qcIssues.spacing : [],
+            temp: Array.isArray(this.qcIssues.temp) ? this.qcIssues.temp : []
+        };
+
+        this.qcIssues = safeIssues;
+
+        // Update summary cards
+        const totalIssues = Object.values(this.qcIssues).reduce((sum, issues) => sum + issues.length, 0);
+        const totalIssuesEl = document.getElementById('qc-total-issues');
+        if (totalIssuesEl) totalIssuesEl.textContent = totalIssues;
+        
+        const paddingEl = document.getElementById('qcPaddingCount');
+        if (paddingEl) paddingEl.textContent = this.qcIssues.padding.length;
+        
+        const yearEl = document.getElementById('qcYearCount');
+        if (yearEl) yearEl.textContent = this.qcIssues.year.length;
+        
+        const spacingEl = document.getElementById('qcSpacingCount');
+        if (spacingEl) spacingEl.textContent = this.qcIssues.spacing.length;
+        
+        const tempEl = document.getElementById('qcTempCount');
+        if (tempEl) tempEl.textContent = this.qcIssues.temp.length;
+        
+        const newAssignments = this.propertyAssignments.filter(item => item.status === 'new').length;
+        const existingAssignments = this.propertyAssignments.filter(item => item.status === 'existing').length;
+        const propNewEl = document.getElementById('newPropertyIdCount');
+        if (propNewEl) propNewEl.textContent = newAssignments;
+        const propExistingEl = document.getElementById('existingPropertyIdCount');
+        if (propExistingEl) propExistingEl.textContent = existingAssignments;
+
+        // Count fixable issues and show/hide bulk apply button
+        const fixableIssues = Object.values(this.qcIssues).reduce((count, issues) => {
+            return count + issues.filter(issue => issue.suggested_fix).length;
+        }, 0);
+        
+        const applyAllBtn = document.getElementById('applyAllFixesBtn');
+        const fixableCountEl = document.getElementById('fixableIssuesCount');
+        
+        if (applyAllBtn && fixableCountEl) {
+            if (fixableIssues > 0) {
+                applyAllBtn.style.display = 'inline-block';
+                fixableCountEl.textContent = `${fixableIssues} issues can be auto-fixed`;
+            } else {
+                applyAllBtn.style.display = 'none';
+                fixableCountEl.textContent = totalIssues > 0 ? 'All issues require manual review' : '0 issues can be auto-fixed';
+            }
+        }
+
+        // Render issues table
+        const tbody = document.getElementById('qcIssuesBody');
+        if (!tbody) return;
+
+        const allIssues = [];
+        
+        // Combine all issue types
+        ['padding', 'year', 'spacing', 'temp'].forEach(type => {
+            this.qcIssues[type].forEach(issue => {
+                allIssues.push({
+                    type: type,
+                    ...issue
+                });
+            });
+        });
+
+        if (allIssues.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="text-center text-muted py-4">
+                        No QC issues found. All file numbers appear to be properly formatted.
+                    </td>
+                </tr>`;
+            return;
+        }
+        tbody.innerHTML = '';
+        allIssues.forEach(issue => {
+            const tr = document.createElement('tr');
+
+            const description = issue.description || issue.issue_description || '';
+            const severity = issue.severity || issue.priority || 'Medium';
+            const suggestedFix = issue.suggested_fix || '';
+
+            const typeTd = document.createElement('td');
+            typeTd.innerHTML = this.getIssueTypeBadge(issue.type);
+            tr.appendChild(typeTd);
+
+            const fileTd = document.createElement('td');
+            fileTd.innerHTML = `<code>${this.escapeHtml(issue.file_number || '')}</code>`;
+            tr.appendChild(fileTd);
+
+            const descriptionTd = document.createElement('td');
+            descriptionTd.textContent = description;
+            tr.appendChild(descriptionTd);
+
+            const fixTd = document.createElement('td');
+            fixTd.innerHTML = suggestedFix ? `<code>${this.escapeHtml(suggestedFix)}</code>` : '<span class="text-muted">N/A</span>';
+            tr.appendChild(fixTd);
+
+            const severityTd = document.createElement('td');
+            severityTd.textContent = severity;
+            tr.appendChild(severityTd);
+
+            const actionTd = document.createElement('td');
+            if (suggestedFix) {
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-sm btn-outline-primary qc-auto-fix-btn';
+                btn.textContent = 'Auto Fix';
+                btn.dataset.recordIndex = issue.record_index;
+                btn.dataset.suggestedFix = suggestedFix;
+                actionTd.appendChild(btn);
+            } else {
+                actionTd.innerHTML = '<span class="text-muted">Manual review needed</span>';
+            }
+            tr.appendChild(actionTd);
+
+            tbody.appendChild(tr);
+        });
+
+        // Attach auto-fix handlers
+        tbody.querySelectorAll('.qc-auto-fix-btn').forEach(button => {
+            button.addEventListener('click', () => {
+                const recordIndex = parseInt(button.dataset.recordIndex, 10);
+                const suggestedFix = button.dataset.suggestedFix;
+                if (!Number.isNaN(recordIndex) && suggestedFix) {
+                    this.applyAutoFix(recordIndex, suggestedFix);
+                }
+            });
+        });
+    }
+
+    getIssueTypeBadge(type) {
+        const typeConfig = {
+            padding: { label: 'Padding', theme: 'warning' },
+            year: { label: 'Year Format', theme: 'danger' },
+            spacing: { label: 'Spacing', theme: 'info' },
+            temp: { label: 'Improper TEMP notation', theme: 'secondary' }
+        };
+
+        const config = typeConfig[type] || { label: type, theme: 'secondary' };
+        return `<span class="badge bg-${config.theme}">${config.label}</span>`;
+    }
+
+    async applyAutoFix(recordIndex, suggestedFix) {
+        try {
+            if (!this.currentSessionId) {
+                throw new Error('No active session. Please upload a file first.');
+            }
+
+            const response = await fetch(`/api/qc/apply-fixes/${this.currentSessionId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    fixes: [{
+                        record_index: recordIndex,
+                        new_value: suggestedFix
+                    }]
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to apply fix');
+            }
+
+            const result = await response.json();
+            this.showNotification(`Applied fix for record #${recordIndex + 1}`, 'success');
+            
+            // Update QC issues from response
+            if (result.updated_qc_issues) {
+                this.qcIssues = result.updated_qc_issues;
+            }
+            
+            // Update grouping preview from response
+            if (result.updated_grouping_preview) {
+                this.groupingPreview = result.updated_grouping_preview;
+                this.renderGroupingPreview();
+            }
+            
+            // Reload preview data to reflect all changes
+            await this.loadPreviewData();
+            
+        } catch (error) {
+            console.error('Auto-fix error:', error);
+            this.showNotification(`Failed to apply fix: ${error.message}`, 'error');
+        }
+    }
+
+    async applyAllAutoFixes() {
+        const allIssues = [];
+        
+        // Collect all issues with suggested fixes
+        ['padding', 'year', 'spacing', 'temp'].forEach(type => {
+            this.qcIssues[type].forEach(issue => {
+                if (issue.suggested_fix) {
+                    allIssues.push({
+                        record_index: issue.record_index,
+                        new_value: issue.suggested_fix
+                    });
+                }
+            });
+        });
+
+        if (allIssues.length === 0) {
+            this.showNotification('No auto-fixable issues found', 'info');
+            return;
+        }
+
+        try {
+            if (!this.currentSessionId) {
+                throw new Error('No active session. Please upload a file first.');
+            }
+
+            const response = await fetch(`/api/qc/apply-fixes/${this.currentSessionId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    fixes: allIssues
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to apply fixes');
+            }
+
+            const result = await response.json();
+            this.showNotification(`Applied ${allIssues.length} auto-fixes successfully!`, 'success');
+            
+            // Update QC issues from response
+            if (result.updated_qc_issues) {
+                this.qcIssues = result.updated_qc_issues;
+            }
+            
+            // Update grouping preview from response
+            if (result.updated_grouping_preview) {
+                this.groupingPreview = result.updated_grouping_preview;
+                this.renderGroupingPreview();
+            }
+            
+            // Reload preview data to reflect all changes
+            await this.loadPreviewData();
+            
+        } catch (error) {
+            console.error('Bulk auto-fix error:', error);
+            this.showNotification(`Failed to apply fixes: ${error.message}`, 'error');
+        }
+    }
+
+    escapeHtml(value) {
+        const str = value === undefined || value === null ? '' : String(value);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     renderPreviewTable() {
         const tbody = document.getElementById('previewTableBody');
         if (!tbody) return;
@@ -247,7 +558,7 @@ class FileIndexingManager {
         if (totalRecords === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="18" class="text-center text-muted py-4">
+                    <td colspan="19" class="text-center text-muted py-4">
                         No records to display. Upload a file to see preview data.
                     </td>
                 </tr>`;
@@ -308,6 +619,7 @@ class FileIndexingManager {
                 ${record.file_number || ''}
                 ${hasMultipleOccurrences ? `<span class="badge bg-warning ms-1">×${hasMultipleOccurrences.count}</span>` : ''}
             </td>
+            <td>${record.prop_id || ''}</td>
             <td class="editable-cell" data-field="registry" data-index="${actualIndex}">${record.registry || ''}</td>
             <td class="editable-cell" data-field="batch_no" data-index="${actualIndex}">${record.batch_no || ''}</td>
             <td class="editable-cell" data-field="file_title" data-index="${actualIndex}">${record.file_title || ''}</td>
@@ -763,5 +1075,12 @@ class FileIndexingManager {
 
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
-    window.fileIndexingManager = new FileIndexingManager();
+    const manager = new FileIndexingManager();
+    window.fileIndexingManager = manager;
+    window.fileIndexer = manager; // Legacy alias for inline handlers
+
+    const qcTab = document.getElementById('qc-issues-tab');
+    qcTab?.addEventListener('shown.bs.tab', () => {
+        manager.renderQCIssues();
+    });
 });

@@ -17,6 +17,8 @@ import zipfile
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from app.models.database import get_db_connection, FileIndexing, SessionLocal
+from pydantic import BaseModel
+import re
 
 GROUPING_SKIP_PATTERNS = ['(TEMP)', ' T,', 'AND EXTENSION']
 TRACKING_ID_PREFIX = 'TRK'
@@ -46,6 +48,12 @@ async def home(request: Request):
 async def file_indexing(request: Request):
     """File indexing page with upload and preview functionality"""
     return templates.TemplateResponse("file_indexing.html", {"request": request})
+
+
+@app.get("/pra", response_class=HTMLResponse)
+async def pra_import(request: Request):
+    """Property Records Assistance (PRA) import page"""
+    return templates.TemplateResponse("pra_import.html", {"request": request})
 
 
 @app.post("/api/upload-csv")
@@ -86,6 +94,12 @@ async def upload_csv(file: UploadFile = File(...)):
         records = processed_df.to_dict('records')
         multiple_occurrences = analyze_file_number_occurrences(processed_df)
         grouping_preview = _build_grouping_preview(records)
+        
+        # Run QC validation on file numbers
+        qc_issues = _run_qc_validation(records)
+        
+        # Generate/assign property IDs
+        property_id_assignments = _assign_property_ids(records)
 
         if not hasattr(app, 'sessions'):
             app.sessions = {}
@@ -96,7 +110,9 @@ async def upload_csv(file: UploadFile = File(...)):
             "data": records,
             "multiple_occurrences": multiple_occurrences,
             "total_records": len(records),
-            "grouping_preview": grouping_preview
+            "grouping_preview": grouping_preview,
+            "qc_issues": qc_issues,
+            "property_assignments": property_id_assignments
         }
 
         return {
@@ -105,7 +121,18 @@ async def upload_csv(file: UploadFile = File(...)):
             "total_records": len(records),
             "multiple_occurrences_count": len(multiple_occurrences),
             "redirect_url": f"/file-indexing?session_id={session_id}",
-            "grouping_preview": grouping_preview
+            "grouping_preview": grouping_preview,
+            "qc_summary": {
+                "total_issues": sum(len(issues) for issues in qc_issues.values()),
+                "padding_issues": len(qc_issues.get('padding', [])),
+                "year_issues": len(qc_issues.get('year', [])),
+                "spacing_issues": len(qc_issues.get('spacing', [])),
+                "temp_issues": len(qc_issues.get('temp', []))
+            },
+            "property_id_summary": {
+                "new_assignments": len([p for p in property_id_assignments if p['status'] == 'new']),
+                "existing_found": len([p for p in property_id_assignments if p['status'] == 'existing'])
+            }
         }
 
     except HTTPException:
@@ -126,7 +153,9 @@ async def get_preview_data(session_id: str):
         "multiple_occurrences": session_data["multiple_occurrences"],
         "total_records": session_data["total_records"],
         "filename": session_data["filename"],
-        "grouping_preview": session_data.get("grouping_preview", {})
+        "grouping_preview": session_data.get("grouping_preview", {}),
+        "qc_issues": session_data.get("qc_issues", {}),
+        "property_assignments": session_data.get("property_assignments", [])
     }
 
 
@@ -193,6 +222,9 @@ async def import_file_indexing(session_id: str):
                 existing_indexing.tracking_id = tracking_id
                 existing_indexing.updated_at = now
                 existing_indexing.updated_by = 1
+                # Assign prop_id if not already set
+                if not existing_indexing.prop_id:
+                    existing_indexing.prop_id = record.get('prop_id')
             else:
                 file_record = FileIndexing(
                     file_number=file_number,
@@ -200,6 +232,7 @@ async def import_file_indexing(session_id: str):
                     status='Indexed',
                     created_at=now,
                     created_by=1,
+                    prop_id=record.get('prop_id'),
                     **payload
                 )
                 db.add(file_record)
@@ -279,6 +312,43 @@ def _normalize_string(value: Any) -> Optional[str]:
     return string_value or None
 
 
+def _collapse_whitespace(value: str) -> str:
+    """Convert any whitespace runs (including non-breaking spaces) to a single space."""
+    if value is None:
+        return ''
+    return re.sub(r'\s+', ' ', str(value)).strip()
+
+
+def _strip_all_whitespace(value: str) -> str:
+    """Remove all whitespace characters from a string."""
+    if value is None:
+        return ''
+    return re.sub(r'\s+', '', str(value))
+
+
+def _normalize_temp_suffix_format(value: str) -> str:
+    """Ensure TEMP suffix uses canonical " (TEMP)" formatting if present."""
+    if not value:
+        return value
+
+    trimmed = str(value).strip()
+
+    temp_patterns = [
+        r'\(T\)\s*$',
+        r'\(TEMP\)\s*$',
+        r'TEMP\s*$',
+        r'T\s*$',
+    ]
+
+    for pattern in temp_patterns:
+        match = re.search(pattern, trimmed, flags=re.IGNORECASE)
+        if match:
+            base = trimmed[:match.start()].rstrip()
+            return f"{base} (TEMP)"
+
+    return trimmed
+
+
 def _combine_location(district: str, lga: str) -> str:
     parts = [_normalize_string(district), _normalize_string(lga)]
     parts = [part for part in parts if part]
@@ -322,7 +392,8 @@ def _build_cofo_record(record: Dict[str, Any]) -> CofO:
         cofo_type='Legacy CofO',
         grantor='Kano State Government',
         grantee=_normalize_string(record.get('file_title')),
-        cofo_date=_normalize_string(record.get('cofo_date'))
+        cofo_date=_normalize_string(record.get('cofo_date')),
+        prop_id=record.get('prop_id')
     )
 
 
@@ -345,7 +416,8 @@ def _update_cofo(target: CofO, source: CofO) -> None:
         'cofo_type',
         'grantor',
         'grantee',
-        'cofo_date'
+        'cofo_date',
+        'prop_id'
     ]
 
     for field in fields_to_sync:
@@ -763,6 +835,353 @@ async def debug_session(session_id: str):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+# ========== QC VALIDATION FUNCTIONS ==========
+
+def _run_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Run quality control validation on file numbers"""
+    qc_issues = {
+        'padding': [],
+        'year': [],
+        'spacing': [],
+        'temp': []
+    }
+    
+    for idx, record in enumerate(records):
+        raw_number = (record.get('file_number') or '').replace('\u00A0', ' ')
+        compact_number = _strip_all_whitespace(raw_number)
+
+        if not compact_number:
+            continue
+        display_number = _collapse_whitespace(raw_number)
+        base_for_spacing = raw_number.strip()
+            
+        # Check for padding issues (leading zeros)
+        padding_issue = _check_padding_issue(compact_number)
+        if padding_issue:
+            qc_issues['padding'].append({
+                'record_index': idx,
+                'file_number': display_number,
+                'issue_type': 'padding',
+                'description': 'File number has unnecessary leading zeros',
+                'suggested_fix': padding_issue['suggested_fix'],
+                'auto_fixable': True,
+                'severity': 'Medium'
+            })
+        
+        # Check for year format issues (2-digit year)
+        year_issue = _check_year_issue(compact_number)
+        if year_issue:
+            qc_issues['year'].append({
+                'record_index': idx,
+                'file_number': display_number,
+                'issue_type': 'year',
+                'description': 'File number has 2-digit year instead of 4-digit',
+                'suggested_fix': year_issue['suggested_fix'],
+                'auto_fixable': True,
+                'severity': 'High'
+            })
+        
+        # Check for spacing issues
+        spacing_issue = _check_spacing_issue(base_for_spacing)
+        if spacing_issue:
+            qc_issues['spacing'].append({
+                'record_index': idx,
+                'file_number': display_number,
+                'issue_type': 'spacing',
+                'description': 'File number contains unwanted spaces',
+                'suggested_fix': spacing_issue['suggested_fix'],
+                'auto_fixable': True,
+                'severity': 'Medium'
+            })
+        
+        # Check for TEMP notation issues
+        temp_issue = _check_temp_issue(base_for_spacing)
+        if temp_issue:
+            qc_issues['temp'].append({
+                'record_index': idx,
+                'file_number': display_number,
+                'issue_type': 'temp',
+                'description': 'File number has improper TEMP notation format',
+                'suggested_fix': temp_issue['suggested_fix'],
+                'auto_fixable': True,
+                'severity': 'Low'
+            })
+    
+    return qc_issues
+
+
+def _check_padding_issue(file_number: str) -> Optional[Dict[str, str]]:
+    """Check if file number has padding issue (leading zeros in final component)"""
+    pattern = r'^([A-Z]+(?:-[A-Z]+)*)-(\d{4})-(0+)(\d+)(\([^)]*\))?$'
+    match = re.match(pattern, file_number)
+    if match:
+        prefix, year, leading_zeros, number, suffix = match.groups()
+        suffix = suffix or ''
+        suggested_fix = _normalize_temp_suffix_format(f"{prefix}-{year}-{number}{suffix}")
+        return {'suggested_fix': suggested_fix}
+    return None
+
+
+def _check_year_issue(file_number: str) -> Optional[Dict[str, str]]:
+    """Check if file number has 2-digit year instead of 4-digit"""
+    pattern = r'^([A-Z]+(?:-[A-Z]+)*)-(\d{2})-(\d+)(\([^)]*\))?$'
+    match = re.match(pattern, file_number)
+    if match:
+        prefix, year_2digit, number, suffix = match.groups()
+        suffix = suffix or ''
+        
+        # Convert 2-digit to 4-digit year
+        year_int = int(year_2digit)
+        if year_int >= 50:  # Assuming 50-99 means 1950-1999
+            year_4digit = f"19{year_2digit}"
+        else:  # 00-49 means 2000-2049
+            year_4digit = f"20{year_2digit}"
+        
+        suggested_fix = _normalize_temp_suffix_format(f"{prefix}-{year_4digit}-{number}{suffix}")
+        return {'suggested_fix': suggested_fix}
+    return None
+
+
+def _check_spacing_issue(file_number: str) -> Optional[Dict[str, str]]:
+    """Check if file number contains spaces"""
+    if not re.search(r'\s', file_number):
+        return None
+
+    base_without_temp = re.sub(r'\s*\(TEMP\)\s*$', '', file_number, flags=re.IGNORECASE)
+    if not re.search(r'\s', base_without_temp):
+        # Only whitespace present is part of a correctly formatted TEMP suffix
+        return None
+
+    compact = _strip_all_whitespace(file_number)
+    suggested_fix = _normalize_temp_suffix_format(compact)
+    return {'suggested_fix': suggested_fix}
+    return None
+
+
+def _check_temp_issue(file_number: str) -> Optional[Dict[str, str]]:
+    """Check if file number has improper TEMP notation"""
+    normalized = _normalize_temp_suffix_format(file_number)
+    if not normalized:
+        return None
+
+    cleaned = file_number.strip()
+    if cleaned == normalized:
+        return None
+
+    if re.search(r'(TEMP|\(TEMP\)|\(T\)|\bT)$', cleaned, flags=re.IGNORECASE):
+        return {'suggested_fix': normalized}
+
+    return None
+
+
+def _assign_property_ids(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Assign property IDs to file numbers with duplicate prevention across all tables"""
+    property_assignments = []
+    property_counter = _get_next_property_id_counter()
+    file_number_prop_cache = {}  # Cache prop_ids assigned in this session
+    
+    for idx, record in enumerate(records):
+        file_number = record.get('file_number', '').strip()
+        if not file_number:
+            continue
+        
+        # First check if we've already assigned a prop_id to this file_number in this session
+        if file_number in file_number_prop_cache:
+            existing_session_prop_id = file_number_prop_cache[file_number]
+            property_assignments.append({
+                'record_index': idx,
+                'file_number': file_number,
+                'property_id': existing_session_prop_id,
+                'status': 'session_reused',
+                'source_table': 'current_session'
+            })
+            record['prop_id'] = existing_session_prop_id
+            continue
+        
+        # Check if property ID already exists for this file number in database
+        existing_prop_id = _find_existing_property_id(file_number)
+        
+        if existing_prop_id:
+            property_assignments.append({
+                'record_index': idx,
+                'file_number': file_number,
+                'property_id': existing_prop_id,
+                'status': 'existing',
+                'source_table': 'existing_lookup'
+            })
+            record['prop_id'] = existing_prop_id
+            # Cache this assignment for potential reuse in the same session
+            file_number_prop_cache[file_number] = existing_prop_id
+        else:
+            # Generate new property ID (simple number)
+            new_prop_id = str(property_counter)
+            property_counter += 1
+            
+            property_assignments.append({
+                'record_index': idx,
+                'file_number': file_number,
+                'property_id': new_prop_id,
+                'status': 'new',
+                'source_table': 'file_indexings'
+            })
+            record['prop_id'] = new_prop_id
+            # Cache this assignment for potential reuse in the same session
+            file_number_prop_cache[file_number] = new_prop_id
+    
+    return property_assignments
+
+
+def _get_next_property_id_counter() -> int:
+    """Get the next available property ID counter by finding the highest existing prop_id across all tables"""
+    db = SessionLocal()
+    try:
+        max_prop_id = 0
+        
+        # Check all tables that have prop_id column
+        tables_to_check = [
+            (FileIndexing, FileIndexing.prop_id),
+            (CofO, CofO.prop_id),
+        ]
+        
+        # Also check property_records and registered_instruments using raw SQL
+        # since they're not in our SQLAlchemy models
+        from sqlalchemy import text
+        
+        # Check property_records table
+        try:
+            result = db.execute(text("SELECT MAX(CAST(prop_id AS INT)) FROM property_records WHERE prop_id IS NOT NULL AND ISNUMERIC(prop_id) = 1"))
+            value = result.scalar()
+            if value is not None:
+                max_prop_id = max(max_prop_id, value)
+        except Exception:
+            pass  # Table might not exist or prop_id might not be numeric
+            
+        # Check registered_instruments table
+        try:
+            result = db.execute(text("SELECT MAX(CAST(prop_id AS INT)) FROM registered_instruments WHERE prop_id IS NOT NULL AND ISNUMERIC(prop_id) = 1"))
+            value = result.scalar()
+            if value is not None:
+                max_prop_id = max(max_prop_id, value)
+        except Exception:
+            pass  # Table might not exist or prop_id might not be numeric
+        
+        # Check SQLAlchemy model tables
+        for model_class, prop_id_column in tables_to_check:
+            try:
+                # Query for max numeric prop_id values
+                result = db.query(prop_id_column).filter(
+                    prop_id_column.isnot(None)
+                ).all()
+                
+                # Convert to integers and find max
+                for (prop_id,) in result:
+                    if prop_id and str(prop_id).isdigit():
+                        max_prop_id = max(max_prop_id, int(prop_id))
+            except Exception:
+                continue  # Skip if column doesn't exist or other issues
+        
+        return max_prop_id + 1
+        
+    finally:
+        db.close()
+
+
+def _find_existing_property_id(file_number: str) -> Optional[str]:
+    """Find existing property ID for a file number across all tables"""
+    db = SessionLocal()
+    try:
+        from sqlalchemy import text
+        
+        # Check in CofO table first
+        cofo_record = db.query(CofO).filter(CofO.mls_fno == file_number).first()
+        if cofo_record and hasattr(cofo_record, 'prop_id') and cofo_record.prop_id:
+            return cofo_record.prop_id
+        
+        # Check in FileIndexing table
+        file_record = db.query(FileIndexing).filter(FileIndexing.file_number == file_number).first()
+        if file_record and hasattr(file_record, 'prop_id') and file_record.prop_id:
+            return file_record.prop_id
+        
+        # Check in property_records table using raw SQL
+        try:
+            result = db.execute(text("""
+                SELECT prop_id FROM property_records 
+                WHERE mlsFNo = :file_number AND prop_id IS NOT NULL
+                ORDER BY created_at DESC
+            """), {'file_number': file_number})
+            prop_record = result.first()
+            if prop_record and prop_record[0]:
+                return str(prop_record[0])
+        except Exception:
+            pass  # Table might not exist or query failed
+            
+        # Check in registered_instruments table using raw SQL
+        try:
+            result = db.execute(text("""
+                SELECT prop_id FROM registered_instruments 
+                WHERE MLSFileNo = :file_number AND prop_id IS NOT NULL
+                ORDER BY created_at DESC
+            """), {'file_number': file_number})
+            reg_record = result.first()
+            if reg_record and reg_record[0]:
+                return str(reg_record[0])
+        except Exception:
+            pass  # Table might not exist or query failed
+        
+        return None
+    finally:
+        db.close()
+
+
+# ========== QC API ENDPOINTS ==========
+
+class QCFixPayload(BaseModel):
+    record_index: int
+    new_value: str
+
+
+class QCFixRequest(BaseModel):
+    fixes: List[QCFixPayload]
+
+
+@app.post("/api/qc/apply-fixes/{session_id}")
+async def apply_qc_fixes(session_id: str, payload: QCFixRequest):
+    """Apply QC fixes to session data"""
+    if not hasattr(app, 'sessions') or session_id not in app.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    session_data = app.sessions[session_id]
+    applied_fixes = []
+    
+    for fix in payload.fixes:
+        record_index = fix.record_index
+        new_value = fix.new_value
+        
+        if 0 <= record_index < len(session_data['data']):
+            old_value = session_data['data'][record_index]['file_number']
+            session_data['data'][record_index]['file_number'] = new_value
+            
+            applied_fixes.append({
+                'record_index': record_index,
+                'old_value': old_value,
+                'new_value': new_value,
+                'timestamp': datetime.now().isoformat()
+            })
+    
+    # Re-run QC validation after fixes
+    session_data['qc_issues'] = _run_qc_validation(session_data['data'])
+    
+    # Recalculate grouping preview after fixes
+    session_data['grouping_preview'] = _build_grouping_preview(session_data['data'])
+    
+    return {
+        'success': True,
+        'applied_fixes': applied_fixes,
+        'updated_qc_issues': session_data['qc_issues'],
+        'updated_grouping_preview': session_data['grouping_preview']
+    }
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ class FileIndexing(Base):
     updated_by = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
+    prop_id = Column('prop_id', String(100))
     is_updated = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
 
@@ -60,6 +61,7 @@ class CofO(Base):
     grantor = Column('Grantor', String(255))
     grantee = Column('Grantee', String(255))
     cofo_date = Column('cofo_date', String(100))
+    prop_id = Column('prop_id', String(100))
 
 class RackShelfLabel(Base):
     __tablename__ = 'Rack_Shelf_Labels'
