@@ -1,21 +1,37 @@
 /* Custom CSS for CSV Importer */
 
 /* PRA Import Specific Styles */
-.upload-area {
-    border: 2px dashed #dee2e6;
-    border-radius: 0.375rem;
-    transition: all 0.3s ease;
-    cursor: pointer;
+
+/* PRA Tables - No text wrapping */
+#propertyRecordsTable,
+#fileNumbersTable {
+    font-size: 12px;
+    min-width: 1600px;
 }
 
-.upload-area:hover {
-    border-color: #0d6efd;
-    background-color: #f8f9fa;
+#propertyRecordsTable th,
+#propertyRecordsTable td,
+#fileNumbersTable th,
+#fileNumbersTable td {
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    padding: 6px 6px;
+    vertical-align: middle;
 }
 
-.upload-area.drag-over {
-    border-color: #0d6efd;
-    background-color: #e7f3ff;
+#propertyRecordsTable th,
+#fileNumbersTable th {
+    background-color: #343a40 !important;
+    color: white !important;
+    font-weight: 600;
+    border: none;
+}
+
+#propertyRecordsTable td,
+#fileNumbersTable td {
+    border-color: #dee2e6;
+    max-width: 150px;
 }
 
 .editable-cell {

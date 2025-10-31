@@ -1,51 +1,37 @@
 // PRA Import JavaScript
 class PRAImportManager {
     constructor() {
-        this.data = [];
+        this.propertyRecordsData = [];
+        this.fileNumbersData = [];
         this.filteredData = [];
         this.currentPage = 1;
         this.itemsPerPage = 20;
         this.sessionId = null;
         this.currentFilter = 'all'; // 'all', 'issues', 'valid'
+        this.currentTab = 'property-records'; // 'property-records', 'file-numbers'
+        this.duplicates = {
+            csv: [],
+            database: []
+        };
         
         this.initializeEventListeners();
     }
 
     initializeEventListeners() {
-        // File input handling
-        const fileInput = document.getElementById('fileInput');
-        const uploadArea = document.getElementById('uploadArea');
-
-        if (fileInput) {
-            fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
-        }
-
-        if (uploadArea) {
-            // Drag and drop functionality
-            uploadArea.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                uploadArea.classList.add('drag-over');
-            });
-
-            uploadArea.addEventListener('dragleave', (e) => {
-                e.preventDefault();
-                uploadArea.classList.remove('drag-over');
-            });
-
-            uploadArea.addEventListener('drop', (e) => {
-                e.preventDefault();
-                uploadArea.classList.remove('drag-over');
-                const files = e.dataTransfer.files;
-                if (files.length > 0) {
-                    this.processFile(files[0]);
-                }
-            });
+        // Form submission handling
+        const uploadForm = document.getElementById('uploadForm');
+        if (uploadForm) {
+            uploadForm.addEventListener('submit', (e) => this.handleFormSubmit(e));
         }
 
         // Filter buttons
         document.getElementById('showAllBtn')?.addEventListener('click', () => this.setFilter('all'));
         document.getElementById('showIssuesBtn')?.addEventListener('click', () => this.setFilter('issues'));
         document.getElementById('showValidBtn')?.addEventListener('click', () => this.setFilter('valid'));
+
+        // Tab switching
+        document.getElementById('property-records-tab')?.addEventListener('click', () => this.switchTab('property-records'));
+        document.getElementById('file-numbers-tab')?.addEventListener('click', () => this.switchTab('file-numbers'));
 
         // Action buttons
         document.getElementById('selectAllBtn')?.addEventListener('click', () => this.selectAll());
@@ -66,11 +52,17 @@ class PRAImportManager {
         document.getElementById('saveRecordBtn')?.addEventListener('click', () => this.saveRecord());
     }
 
-    handleFileSelect(event) {
-        const file = event.target.files[0];
-        if (file) {
-            this.processFile(file);
+    handleFormSubmit(event) {
+        event.preventDefault();
+        const fileInput = document.getElementById('fileInput');
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            this.showAlert('Please select a file to upload.', 'warning');
+            return;
         }
+        
+        this.processFile(file);
     }
 
     async processFile(file) {
@@ -97,9 +89,12 @@ class PRAImportManager {
 
             const result = await response.json();
             this.sessionId = result.session_id;
-            this.data = result.data || [];
+            this.propertyRecordsData = result.property_records || [];
+            this.fileNumbersData = result.file_numbers || [];
+            this.duplicates = result.duplicates || { csv: [], database: [] };
             
             this.updateStatistics(result);
+            this.showDuplicates();
             this.applyFilter();
             this.showPreviewSection();
             this.showAlert(`File processed successfully! ${result.total_records} records loaded.`, 'success');
@@ -136,9 +131,13 @@ class PRAImportManager {
 
     updateStatistics(result) {
         document.getElementById('total-records').textContent = result.total_records || 0;
+        document.getElementById('duplicate-records').textContent = result.duplicate_count || 0;
         document.getElementById('validation-issues').textContent = result.validation_issues || 0;
-        document.getElementById('property-assignments').textContent = result.property_assignments || 0;
         document.getElementById('ready-records').textContent = result.ready_records || 0;
+
+        // Update tab counts
+        document.getElementById('propertyRecordsCount').textContent = this.propertyRecordsData.length;
+        document.getElementById('fileNumbersCount').textContent = this.fileNumbersData.length;
 
         // Show statistics row
         document.getElementById('statisticsRow').style.display = 'flex';
@@ -147,6 +146,76 @@ class PRAImportManager {
         if (result.validation_issues > 0) {
             this.showValidationIssues(result.issues || []);
         }
+    }
+
+    switchTab(tabName) {
+        this.currentTab = tabName;
+        this.currentPage = 1;
+        this.applyFilter();
+    }
+
+    showDuplicates() {
+        const csvDuplicates = this.duplicates.csv || [];
+        const dbDuplicates = this.duplicates.database || [];
+        
+        document.getElementById('csvDuplicatesCount').textContent = csvDuplicates.length;
+        document.getElementById('dbDuplicatesCount').textContent = dbDuplicates.length;
+
+        if (csvDuplicates.length > 0 || dbDuplicates.length > 0) {
+            this.renderDuplicatesList(csvDuplicates, 'csvDuplicatesList', 'CSV');
+            this.renderDuplicatesList(dbDuplicates, 'dbDuplicatesList', 'Database');
+            document.getElementById('duplicatesPanel').style.display = 'block';
+        }
+    }
+
+    renderDuplicatesList(duplicates, containerId, type) {
+        const container = document.getElementById(containerId);
+        if (!container || duplicates.length === 0) return;
+
+        let html = '';
+        duplicates.forEach(duplicate => {
+            html += `
+                <div class="card mb-3 border-warning">
+                    <div class="card-header bg-light">
+                        <h6 class="mb-0">
+                            <i class="fas fa-file-alt me-2"></i>
+                            File Number: <strong>${duplicate.file_number}</strong>
+                            <span class="badge bg-warning ms-2">${duplicate.count} occurrences</span>
+                        </h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            ${duplicate.records.map((record, index) => `
+                                <div class="col-md-6 mb-2">
+                                    <div class="border rounded p-2 bg-light">
+                                        <small class="text-muted">${type} Record ${index + 1}:</small>
+                                        <div><strong>Grantee:</strong> ${record.grantee || 'N/A'}</div>
+                                        <div><strong>Transaction Type:</strong> ${record.transaction_type || 'N/A'}</div>
+                                        <div><strong>Plot No:</strong> ${record.plot_no || 'N/A'}</div>
+                                        ${type === 'Database' ? `<div><strong>Existing Prop ID:</strong> ${record.prop_id || 'N/A'}</div>` : ''}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="mt-3">
+                            <div class="btn-group btn-group-sm">
+                                <button class="btn btn-outline-primary" onclick="praManager.editDuplicate('${duplicate.file_number}', '${type}')">
+                                    <i class="fas fa-edit me-1"></i>Edit
+                                </button>
+                                <button class="btn btn-outline-success" onclick="praManager.confirmDuplicate('${duplicate.file_number}', '${type}')">
+                                    <i class="fas fa-check me-1"></i>Confirm Import
+                                </button>
+                                <button class="btn btn-outline-danger" onclick="praManager.skipDuplicate('${duplicate.file_number}', '${type}')">
+                                    <i class="fas fa-times me-1"></i>Skip
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        container.innerHTML = html;
     }
 
     showValidationIssues(issues) {
@@ -200,15 +269,18 @@ class PRAImportManager {
     }
 
     applyFilter() {
+        // Get data based on current tab
+        const sourceData = this.currentTab === 'property-records' ? this.propertyRecordsData : this.fileNumbersData;
+        
         switch (this.currentFilter) {
             case 'issues':
-                this.filteredData = this.data.filter(record => record.hasIssues);
+                this.filteredData = sourceData.filter(record => record.hasIssues);
                 break;
             case 'valid':
-                this.filteredData = this.data.filter(record => !record.hasIssues);
+                this.filteredData = sourceData.filter(record => !record.hasIssues);
                 break;
             default:
-                this.filteredData = [...this.data];
+                this.filteredData = [...sourceData];
                 break;
         }
         
@@ -216,8 +288,32 @@ class PRAImportManager {
         this.renderPagination();
     }
 
+    sanitizeValue(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+
+        if (typeof value === 'number') {
+            return Number.isNaN(value) ? '' : value.toString();
+        }
+
+        if (typeof value === 'string') {
+            const trimmed = value.trim();
+            if (!trimmed) {
+                return '';
+            }
+            if (["nan", "none", "null", "undefined", "n/a"].includes(trimmed.toLowerCase())) {
+                return '';
+            }
+            return trimmed;
+        }
+
+        return String(value ?? '');
+    }
+
     renderTable() {
-        const tbody = document.getElementById('previewTableBody');
+        const tableBodyId = this.currentTab === 'property-records' ? 'propertyRecordsTableBody' : 'fileNumbersTableBody';
+        const tbody = document.getElementById(tableBodyId);
         if (!tbody) return;
 
         const startIndex = (this.currentPage - 1) * this.itemsPerPage;
@@ -228,14 +324,16 @@ class PRAImportManager {
 
         pageData.forEach((record, index) => {
             const actualIndex = startIndex + index;
-            const tr = this.createTableRow(record, actualIndex + 1, actualIndex);
+            const tr = this.currentTab === 'property-records' ? 
+                this.createPropertyRecordRow(record, actualIndex + 1, actualIndex) :
+                this.createFileNumberRow(record, actualIndex + 1, actualIndex);
             tbody.appendChild(tr);
         });
 
         this.updateShowingInfo();
     }
 
-    createTableRow(record, displayIndex, actualIndex) {
+    createPropertyRecordRow(record, displayIndex, actualIndex) {
         const tr = document.createElement('tr');
         tr.dataset.index = actualIndex;
         
@@ -249,33 +347,82 @@ class PRAImportManager {
                 <input type="checkbox" class="row-select" data-index="${actualIndex}">
             </td>
             <td>${displayIndex}</td>
-            <td class="editable-cell" data-field="file_number" data-index="${actualIndex}">
-                ${record.file_number || ''}
+            <td class="editable-cell" data-field="mlsFNo" data-index="${actualIndex}">
+                ${this.sanitizeValue(record.mlsFNo)}
                 ${record.hasIssues ? '<i class="fas fa-exclamation-triangle text-warning ms-1" title="Has validation issues"></i>' : ''}
             </td>
-            <td>${record.prop_id || ''}</td>
-            <td class="editable-cell" data-field="title_type" data-index="${actualIndex}">${record.title_type || ''}</td>
-            <td class="editable-cell" data-field="transaction_type" data-index="${actualIndex}">${record.transaction_type || ''}</td>
-            <td class="editable-cell" data-field="serial_no" data-index="${actualIndex}">${record.serial_no || ''}</td>
-            <td class="editable-cell" data-field="page_no" data-index="${actualIndex}">${record.page_no || ''}</td>
-            <td class="editable-cell" data-field="volume_no" data-index="${actualIndex}">${record.volume_no || ''}</td>
-            <td class="editable-cell" data-field="grantor" data-index="${actualIndex}">${record.grantor || ''}</td>
-            <td class="editable-cell" data-field="grantee" data-index="${actualIndex}">${record.grantee || ''}</td>
-            <td class="editable-cell" data-field="property_description" data-index="${actualIndex}">${record.property_description || ''}</td>
-            <td class="editable-cell" data-field="location" data-index="${actualIndex}">${record.location || ''}</td>
-            <td class="editable-cell" data-field="plot_no" data-index="${actualIndex}">${record.plot_no || ''}</td>
-            <td class="editable-cell" data-field="lga" data-index="${actualIndex}">${record.lga || ''}</td>
-            <td class="editable-cell" data-field="district" data-index="${actualIndex}">${record.district || ''}</td>
+            <td>${this.sanitizeValue(record.prop_id)}</td>
+            <td class="editable-cell" data-field="transaction_type" data-index="${actualIndex}">${this.sanitizeValue(record.transaction_type)}</td>
+            <td class="editable-cell" data-field="transaction_date" data-index="${actualIndex}">${this.sanitizeValue(record.transaction_date)}</td>
+            <td class="editable-cell" data-field="serialNo" data-index="${actualIndex}">${this.sanitizeValue(record.serialNo)}</td>
+            <td class="editable-cell" data-field="pageNo" data-index="${actualIndex}">${this.sanitizeValue(record.pageNo)}</td>
+            <td class="editable-cell" data-field="volumeNo" data-index="${actualIndex}">${this.sanitizeValue(record.volumeNo)}</td>
+            <td>${this.sanitizeValue(record.regNo)}</td>
+            <td class="editable-cell" data-field="grantor_assignor" data-index="${actualIndex}">${this.sanitizeValue(record.grantor_assignor)}</td>
+            <td class="editable-cell" data-field="grantee_assignee" data-index="${actualIndex}">${this.sanitizeValue(record.grantee_assignee)}</td>
+            <td class="editable-cell" data-field="streetName" data-index="${actualIndex}">${this.sanitizeValue(record.streetName)}</td>
+            <td class="editable-cell" data-field="house_no" data-index="${actualIndex}">${this.sanitizeValue(record.house_no)}</td>
+            <td class="editable-cell" data-field="districtName" data-index="${actualIndex}">${this.sanitizeValue(record.districtName)}</td>
+            <td class="editable-cell" data-field="plot_no" data-index="${actualIndex}">${this.sanitizeValue(record.plot_no)}</td>
+            <td class="editable-cell" data-field="LGA" data-index="${actualIndex}">${this.sanitizeValue(record.LGA)}</td>
+            <td class="editable-cell" data-field="plot_size" data-index="${actualIndex}">${this.sanitizeValue(record.plot_size)}</td>
             <td>
-                <span class="badge ${record.hasIssues ? 'bg-warning' : 'bg-success'}">
+                <span class="badge ${record.hasIssues ? 'bg-warning text-dark' : 'bg-success'}">
                     ${record.hasIssues ? 'Issues' : 'Valid'}
                 </span>
             </td>
             <td class="text-center">
                 <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-primary btn-sm" onclick="praManager.editRecord(${actualIndex})" title="Edit">
-                        <i class="fas fa-edit"></i>
+                    <button class="btn btn-outline-danger btn-sm" onclick="praManager.deleteRecord(${actualIndex})" title="Delete">
+                        <i class="fas fa-trash"></i>
                     </button>
+                </div>
+            </td>
+        `;
+
+        // Add click handlers for editable cells
+        tr.querySelectorAll('.editable-cell').forEach(cell => {
+            cell.addEventListener('click', () => this.editCell(cell));
+        });
+
+        // Add change handler for row select checkbox
+        tr.querySelector('.row-select')?.addEventListener('change', (e) => this.handleRowSelect(e, actualIndex));
+        
+        return tr;
+    }
+
+    createFileNumberRow(record, displayIndex, actualIndex) {
+        const tr = document.createElement('tr');
+        tr.dataset.index = actualIndex;
+        
+        // Add warning class for records with issues
+        if (record.hasIssues) {
+            tr.classList.add('table-warning');
+        }
+        
+        tr.innerHTML = `
+            <td>
+                <input type="checkbox" class="row-select" data-index="${actualIndex}">
+            </td>
+            <td>${displayIndex}</td>
+            <td class="editable-cell" data-field="mlsfNo" data-index="${actualIndex}">
+                ${this.sanitizeValue(record.mlsfNo)}
+                ${record.hasIssues ? '<i class="fas fa-exclamation-triangle text-warning ms-1" title="Has validation issues"></i>' : ''}
+            </td>
+            <td class="editable-cell" data-field="FileName" data-index="${actualIndex}">${this.sanitizeValue(record.FileName)}</td>
+            <td class="editable-cell" data-field="location" data-index="${actualIndex}">${this.sanitizeValue(record.location)}</td>
+            <td class="editable-cell" data-field="plot_no" data-index="${actualIndex}">${this.sanitizeValue(record.plot_no)}</td>
+            <td>${this.sanitizeValue(record.type || 'MLS')}</td>
+            <td>${this.sanitizeValue(record.SOURCE || 'PRA')}</td>
+            <td>${this.sanitizeValue(record.created_by)}</td>
+            <td>${this.sanitizeValue(record.tracking_id)}</td>
+            <td>
+                <span class="badge ${record.hasIssues ? 'bg-warning text-dark' : 'bg-success'}">
+                    ${record.hasIssues ? 'Issues' : 'Valid'}
+                </span>
+            </td>
+            <td class="text-center">
+                <div class="btn-group btn-group-sm">
                     <button class="btn btn-outline-danger btn-sm" onclick="praManager.deleteRecord(${actualIndex})" title="Delete">
                         <i class="fas fa-trash"></i>
                     </button>
@@ -296,34 +443,141 @@ class PRAImportManager {
 
     editCell(cell) {
         const field = cell.dataset.field;
-        const index = parseInt(cell.dataset.index);
-        const currentValue = cell.textContent.trim();
-        
-        // Create input element
+        const index = Number.parseInt(cell.dataset.index, 10);
+
+        if (Number.isNaN(index)) {
+            return;
+        }
+
+        const record = this.filteredData[index];
+        if (!record) {
+            return;
+        }
+
+        const originalRawValue = record[field] ?? '';
+        const originalDisplayValue = this.sanitizeValue(originalRawValue);
+
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'form-control form-control-sm';
-        input.value = currentValue;
-        
-        // Replace cell content with input
+        input.value = originalDisplayValue;
+
         cell.innerHTML = '';
         cell.appendChild(input);
         input.focus();
         input.select();
-        
-        // Handle save on blur or enter
-        const saveValue = () => {
-            const newValue = input.value.trim();
-            this.filteredData[index][field] = newValue;
-            cell.innerHTML = newValue;
+
+        let committed = false;
+
+        const restoreCell = (value) => {
+            cell.innerHTML = this.sanitizeValue(value);
+            this.decorateCellAfterEdit(cell, field, record);
         };
-        
-        input.addEventListener('blur', saveValue);
-        input.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                saveValue();
+
+        const commitValue = () => {
+            if (committed) {
+                return;
+            }
+            committed = true;
+
+            const newDisplayValue = input.value.trim();
+
+            if (newDisplayValue === originalDisplayValue) {
+                restoreCell(originalRawValue);
+                return;
+            }
+
+            const newRawValue = newDisplayValue;
+            record[field] = newRawValue;
+            this.updateLinkedFields(record, field, newRawValue);
+            this.syncLinkedDatasets(record, field, originalRawValue, newRawValue);
+            restoreCell(newRawValue);
+        };
+
+        input.addEventListener('blur', commitValue);
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                commitValue();
+                input.blur();
+            } else if (event.key === 'Escape') {
+                committed = true;
+                restoreCell(originalRawValue);
+                input.blur();
             }
         });
+    }
+
+    decorateCellAfterEdit(cell, field, record) {
+        const needsIssueIcon = record.hasIssues && (field === 'mlsFNo' || field === 'mlsfNo');
+        if (needsIssueIcon) {
+            cell.insertAdjacentHTML('beforeend', '<i class="fas fa-exclamation-triangle text-warning ms-1" title="Has validation issues"></i>');
+        }
+    }
+
+    updateLinkedFields(record, field, value) {
+        const updates = {
+            mlsFNo: ['fileno'],
+            fileno: ['mlsFNo'],
+            serialNo: ['SerialNo'],
+            SerialNo: ['serialNo'],
+            grantor_assignor: ['Grantor'],
+            Grantor: ['grantor_assignor'],
+            grantee_assignee: ['Grantee'],
+            Grantee: ['grantee_assignee'],
+            LGA: ['lgsaOrCity'],
+            created_by: ['CreatedBy'],
+            CreatedBy: ['created_by'],
+            DateCreated: ['date_created'],
+            date_created: ['DateCreated']
+        };
+
+        const aliases = updates[field] || [];
+        aliases.forEach((alias) => {
+            record[alias] = value;
+        });
+    }
+
+    syncLinkedDatasets(record, field, oldValue, newValue) {
+        if (this.currentTab === 'property-records') {
+            const oldFileNumber = this.sanitizeValue(field === 'mlsFNo' || field === 'fileno' ? oldValue : record.mlsFNo);
+            const currentFileNumber = this.sanitizeValue(record.mlsFNo || record.fileno);
+
+            if (field === 'mlsFNo' || field === 'fileno') {
+                this.fileNumbersData.forEach((fileRecord) => {
+                    if (this.sanitizeValue(fileRecord.mlsfNo) === oldFileNumber) {
+                        fileRecord.mlsfNo = newValue;
+                    }
+                });
+            }
+
+            if (field === 'grantee_assignee' || field === 'Grantee') {
+                this.fileNumbersData.forEach((fileRecord) => {
+                    if (this.sanitizeValue(fileRecord.mlsfNo) === currentFileNumber) {
+                        fileRecord.FileName = newValue;
+                    }
+                });
+            }
+        } else if (this.currentTab === 'file-numbers') {
+            if (field === 'mlsfNo') {
+                const oldFileNumber = this.sanitizeValue(oldValue);
+                this.propertyRecordsData.forEach((propRecord) => {
+                    if (this.sanitizeValue(propRecord.mlsFNo) === oldFileNumber) {
+                        propRecord.mlsFNo = newValue;
+                        propRecord.fileno = newValue;
+                    }
+                });
+            }
+
+            if (field === 'FileName') {
+                const currentFileNumber = this.sanitizeValue(record.mlsfNo);
+                this.propertyRecordsData.forEach((propRecord) => {
+                    if (this.sanitizeValue(propRecord.mlsFNo) === currentFileNumber) {
+                        propRecord.Grantee = newValue;
+                        propRecord.grantee_assignee = newValue;
+                    }
+                });
+            }
+        }
     }
 
     renderPagination() {
@@ -458,13 +712,33 @@ class PRAImportManager {
     }
 
     deleteRecord(index) {
-        if (confirm('Are you sure you want to delete this record?')) {
-            this.filteredData.splice(index, 1);
-            this.data = this.data.filter(record => record !== this.filteredData[index]);
-            this.renderTable();
-            this.renderPagination();
-            this.showAlert('Record deleted successfully', 'success');
+        if (!confirm('Are you sure you want to delete this record?')) {
+            return;
         }
+
+        const record = this.filteredData[index];
+        if (!record) {
+            return;
+        }
+
+        const sourceData = this.currentTab === 'property-records'
+            ? this.propertyRecordsData
+            : this.fileNumbersData;
+
+        const sourceIndex = sourceData.indexOf(record);
+        if (sourceIndex !== -1) {
+            sourceData.splice(sourceIndex, 1);
+        }
+
+        this.filteredData.splice(index, 1);
+        this.renderTable();
+        this.renderPagination();
+
+        document.getElementById('propertyRecordsCount').textContent = this.propertyRecordsData.length;
+        document.getElementById('fileNumbersCount').textContent = this.fileNumbersData.length;
+
+        this.updateShowingInfo();
+        this.showAlert('Record deleted successfully', 'success');
     }
 
     async importData() {
@@ -500,15 +774,35 @@ class PRAImportManager {
     }
 
     resetForm() {
-        this.data = [];
+        this.propertyRecordsData = [];
+        this.fileNumbersData = [];
         this.filteredData = [];
         this.sessionId = null;
+        this.duplicates = { csv: [], database: [] };
         
         document.getElementById('fileInput').value = '';
         document.getElementById('statisticsRow').style.display = 'none';
         document.getElementById('previewSection').style.display = 'none';
         document.getElementById('validationPanel').style.display = 'none';
+        document.getElementById('duplicatesPanel').style.display = 'none';
         document.getElementById('importBtn').disabled = true;
+    }
+
+    // Duplicate handling methods
+    editDuplicate(fileNumber, type) {
+        this.showAlert(`Edit duplicate functionality for ${fileNumber} (${type}) will be implemented.`, 'info');
+    }
+
+    confirmDuplicate(fileNumber, type) {
+        this.showAlert(`Confirmed duplicate ${fileNumber} for import.`, 'success');
+        // Logic to mark duplicate as confirmed for import
+    }
+
+    skipDuplicate(fileNumber, type) {
+        if (confirm(`Are you sure you want to skip importing ${fileNumber}?`)) {
+            this.showAlert(`Skipped duplicate ${fileNumber}.`, 'warning');
+            // Logic to remove duplicate from import queue
+        }
     }
 
     showPreviewSection() {

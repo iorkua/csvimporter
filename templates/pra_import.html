@@ -91,21 +91,11 @@
                         <button class="btn btn-outline-secondary d-md-none me-3" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar">
                             <i class="fas fa-bars"></i>
                         </button>
-                        <i class="fas fa-chart-line text-primary me-2"></i>
-                        Property Records Assistance (PRA) Import
+                        <i class="fas fa-chart-line me-2"></i>
+                        PRA Import
                     </h1>
                     
                     <div class="btn-toolbar mb-2 mb-md-0">
-                        <div class="btn-group me-2">
-                            <button type="button" class="btn btn-sm btn-outline-secondary">
-                                <i class="fas fa-download me-1"></i>
-                                Template
-                            </button>
-                            <button type="button" class="btn btn-sm btn-outline-secondary">
-                                <i class="fas fa-history me-1"></i>
-                                Import History
-                            </button>
-                        </div>
                         <button type="button" class="btn btn-sm btn-primary" id="importBtn" disabled>
                             <i class="fas fa-upload me-1"></i>
                             Import Data
@@ -118,27 +108,30 @@
 
                 <!-- Upload Section -->
                 <div class="row mb-4">
-                    <div class="col-12">
+                    <div class="col-lg-8">
                         <div class="card">
-                            <div class="card-header bg-primary text-white">
+                            <div class="card-header">
                                 <h5 class="card-title mb-0">
                                     <i class="fas fa-cloud-upload-alt me-2"></i>
-                                    Upload PRA Data File
+                                    Upload CSV File for PRA Import
                                 </h5>
                             </div>
                             <div class="card-body">
-                                <div class="upload-area" id="uploadArea">
-                                    <div class="text-center py-5">
-                                        <i class="fas fa-file-upload text-muted mb-3" style="font-size: 3rem;"></i>
-                                        <h4>Drop your PRA file here or click to browse</h4>
-                                        <p class="text-muted">Supported formats: CSV, Excel (.xlsx, .xls)</p>
-                                        <input type="file" id="fileInput" class="d-none" accept=".csv,.xlsx,.xls">
-                                        <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
-                                            <i class="fas fa-folder-open me-2"></i>
-                                            Choose File
-                                        </button>
+                                <p class="text-muted mb-3">
+                                    Upload your CSV file containing Property Records Assistance data. Expected columns: 
+                                    mlsFNo, transaction_type, transaction_date, SerialNo, pageNo, volumeNo, etc.
+                                </p>
+                                
+                                <form id="uploadForm" enctype="multipart/form-data">
+                                    <div class="mb-3">
+                                        <input type="file" class="form-control" id="fileInput" 
+                                               accept=".csv,.xlsx,.xls" required>
                                     </div>
-                                </div>
+                                    <button type="submit" class="btn btn-primary" id="uploadBtn">
+                                        <i class="fas fa-upload me-2"></i>
+                                        Upload & Preview
+                                    </button>
+                                </form>
                                 
                                 <!-- Upload Progress -->
                                 <div id="uploadProgress" class="mt-3" style="display: none;">
@@ -151,6 +144,37 @@
                                              role="progressbar" style="width: 0%" id="progressBar"></div>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-lg-4">
+                        <div class="card">
+                            <div class="card-header bg-info text-white">
+                                <h6 class="card-title mb-0">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    Expected CSV Format:
+                                </h6>
+                            </div>
+                            <div class="card-body">
+                                <ul class="list-unstyled mb-0 small">
+                                    <li>• mlsFNo</li>
+                                    <li>• transaction_type</li>
+                                    <li>• transaction_date</li>
+                                    <li>• SerialNo</li>
+                                    <li>• pageNo</li>
+                                    <li>• volumeNo</li>
+                                    <li>• Grantor/Assignor</li>
+                                    <li>• Grantee/Assignee</li>
+                                    <li>• streetName</li>
+                                    <li>• house_no</li>
+                                    <li>• districtName</li>
+                                    <li>• plot_no</li>
+                                    <li>• LGA</li>
+                                    <li>• plot_size</li>
+                                    <li>• CreatedBy</li>
+                                    <li>• DateCreated</li>
+                                </ul>
                             </div>
                         </div>
                     </div>
@@ -170,25 +194,25 @@
                     <div class="col-md-3">
                         <div class="card text-center">
                             <div class="card-body">
-                                <i class="fas fa-exclamation-triangle text-warning mb-2" style="font-size: 2rem;"></i>
+                                <i class="fas fa-copy text-warning mb-2" style="font-size: 2rem;"></i>
+                                <h5 class="card-title" id="duplicate-records">0</h5>
+                                <p class="card-text text-muted">Duplicate Records</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <i class="fas fa-exclamation-triangle text-danger mb-2" style="font-size: 2rem;"></i>
                                 <h5 class="card-title" id="validation-issues">0</h5>
-                                <p class="card-text text-muted">Validation Issues</p>
+                                <p class="card-text text-muted">QC Issues</p>
                             </div>
                         </div>
                     </div>
                     <div class="col-md-3">
                         <div class="card text-center">
                             <div class="card-body">
-                                <i class="fas fa-database text-success mb-2" style="font-size: 2rem;"></i>
-                                <h5 class="card-title" id="property-assignments">0</h5>
-                                <p class="card-text text-muted">Property Assignments</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <i class="fas fa-check-circle text-primary mb-2" style="font-size: 2rem;"></i>
+                                <i class="fas fa-check-circle text-success mb-2" style="font-size: 2rem;"></i>
                                 <h5 class="card-title" id="ready-records">0</h5>
                                 <p class="card-text text-muted">Ready to Import</p>
                             </div>
@@ -221,6 +245,24 @@
                                         </button>
                                     </div>
                                 </div>
+                                
+                                <!-- Preview Tabs -->
+                                <ul class="nav nav-tabs mt-3" id="previewTabs" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active" id="property-records-tab" data-bs-toggle="tab" 
+                                                data-bs-target="#property-records-pane" type="button" role="tab">
+                                            <i class="fas fa-home me-1"></i>
+                                            Property Records (<span id="propertyRecordsCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="file-numbers-tab" data-bs-toggle="tab" 
+                                                data-bs-target="#file-numbers-pane" type="button" role="tab">
+                                            <i class="fas fa-file-alt me-1"></i>
+                                            File Numbers (<span id="fileNumbersCount">0</span>)
+                                        </button>
+                                    </li>
+                                </ul>
                             </div>
                             <div class="card-body">
                                 <!-- Action Buttons -->
@@ -253,37 +295,73 @@
                                     </div>
                                 </div>
 
-                                <!-- Data Table -->
-                                <div class="table-responsive">
-                                    <table class="table table-striped table-hover" id="previewTable">
-                                        <thead class="table-dark sticky-top">
-                                            <tr>
-                                                <th width="50">
-                                                    <input type="checkbox" id="selectAllCheckbox">
-                                                </th>
-                                                <th width="60">#</th>
-                                                <th>File Number</th>
-                                                <th>Prop ID</th>
-                                                <th>Title Type</th>
-                                                <th>Transaction Type</th>
-                                                <th>Serial No</th>
-                                                <th>Page No</th>
-                                                <th>Volume No</th>
-                                                <th>Grantor</th>
-                                                <th>Grantee</th>
-                                                <th>Property Description</th>
-                                                <th>Location</th>
-                                                <th>Plot No</th>
-                                                <th>LGA</th>
-                                                <th>District</th>
-                                                <th>Status</th>
-                                                <th width="120" class="text-center">Actions</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody id="previewTableBody">
-                                            <!-- Dynamic content will be inserted here -->
-                                        </tbody>
-                                    </table>
+                                <!-- Tab Content -->
+                                <div class="tab-content" id="previewTabContent">
+                                    <!-- Property Records Tab -->
+                                    <div class="tab-pane fade show active" id="property-records-pane" role="tabpanel">
+                                        <div class="table-responsive">
+                                            <table class="table table-striped table-hover" id="propertyRecordsTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="50">
+                                                            <input type="checkbox" id="selectAllPropertyCheckbox">
+                                                        </th>
+                                                        <th width="60">#</th>
+                                                        <th>File Number</th>
+                                                        <th>Prop ID</th>
+                                                        <th>Transaction Type</th>
+                                                        <th>Transaction Date</th>
+                                                        <th>Serial No</th>
+                                                        <th>Page No</th>
+                                                        <th>Volume No</th>
+                                                        <th>Reg No</th>
+                                                        <th>Grantor</th>
+                                                        <th>Grantee</th>
+                                                        <th>Street Name</th>
+                                                        <th>House No</th>
+                                                        <th>District</th>
+                                                        <th>Plot No</th>
+                                                        <th>LGA</th>
+                                                        <th>Plot Size</th>
+                                                        <th>Status</th>
+                                                        <th width="120" class="text-center">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="propertyRecordsTableBody">
+                                                    <!-- Property records content will be inserted here -->
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <!-- File Numbers Tab -->
+                                    <div class="tab-pane fade" id="file-numbers-pane" role="tabpanel">
+                                        <div class="table-responsive">
+                                            <table class="table table-striped table-hover" id="fileNumbersTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="50">
+                                                            <input type="checkbox" id="selectAllFileCheckbox">
+                                                        </th>
+                                                        <th width="60">#</th>
+                                                        <th>File Number</th>
+                                                        <th>File Name</th>
+                                                        <th>Location</th>
+                                                        <th>Plot No</th>
+                                                        <th>Type</th>
+                                                        <th>Source</th>
+                                                        <th>Created By</th>
+                                                        <th>Tracking ID</th>
+                                                        <th>Status</th>
+                                                        <th width="120" class="text-center">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="fileNumbersTableBody">
+                                                    <!-- File numbers content will be inserted here -->
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
                                 </div>
 
                                 <!-- Pagination -->
@@ -299,6 +377,56 @@
                                             <!-- Pagination will be generated here -->
                                         </ul>
                                     </nav>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Duplicates Panel -->
+                <div class="row mt-4" id="duplicatesPanel" style="display: none;">
+                    <div class="col-12">
+                        <div class="card border-info">
+                            <div class="card-header bg-info text-white">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-copy me-2"></i>
+                                    Duplicate File Numbers Detected
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="alert alert-info">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    The following file numbers appear multiple times in your CSV or already exist in the database. 
+                                    Please review and confirm how to handle each duplicate.
+                                </div>
+                                
+                                <!-- Duplicate handling tabs -->
+                                <ul class="nav nav-pills mb-3" id="duplicatesTabs" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active" id="csv-duplicates-tab" data-bs-toggle="pill" 
+                                                data-bs-target="#csv-duplicates" type="button" role="tab">
+                                            CSV Duplicates (<span id="csvDuplicatesCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="db-duplicates-tab" data-bs-toggle="pill" 
+                                                data-bs-target="#db-duplicates" type="button" role="tab">
+                                            Database Duplicates (<span id="dbDuplicatesCount">0</span>)
+                                        </button>
+                                    </li>
+                                </ul>
+                                
+                                <div class="tab-content" id="duplicatesTabContent">
+                                    <div class="tab-pane fade show active" id="csv-duplicates" role="tabpanel">
+                                        <div id="csvDuplicatesList">
+                                            <!-- CSV duplicates will be displayed here -->
+                                        </div>
+                                    </div>
+                                    <div class="tab-pane fade" id="db-duplicates" role="tabpanel">
+                                        <div id="dbDuplicatesList">
+                                            <!-- Database duplicates will be displayed here -->
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -350,7 +478,7 @@
                 <div class="modal-header">
                     <h5 class="modal-title">
                         <i class="fas fa-edit me-2"></i>
-                        Edit Property Record
+                        Edit PRA Record
                     </h5>
                     <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                 </div>
@@ -358,23 +486,12 @@
                     <form id="editRecordForm">
                         <div class="row">
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">File Number</label>
-                                <input type="text" class="form-control" name="file_number" required>
+                                <label class="form-label">File Number (mlsFNo)</label>
+                                <input type="text" class="form-control" name="mlsFNo" required>
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Property ID</label>
                                 <input type="text" class="form-control" name="prop_id" readonly>
-                            </div>
-                            <div class="col-md-6 mb-3">
-                                <label class="form-label">Title Type</label>
-                                <select class="form-select" name="title_type">
-                                    <option value="">Select Title Type</option>
-                                    <option value="CofO">Certificate of Occupancy</option>
-                                    <option value="Deed">Deed of Assignment</option>
-                                    <option value="Lease">Lease Agreement</option>
-                                    <option value="Mortgage">Mortgage</option>
-                                    <option value="Other">Other</option>
-                                </select>
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Transaction Type</label>
@@ -385,35 +502,44 @@
                                     <option value="Mortgage">Mortgage</option>
                                     <option value="Lease">Lease</option>
                                     <option value="Release">Release</option>
+                                    <option value="Surrender">Surrender</option>
                                 </select>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Transaction Date</label>
+                                <input type="date" class="form-control" name="transaction_date">
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">Serial No</label>
-                                <input type="text" class="form-control" name="serial_no">
+                                <input type="text" class="form-control" name="SerialNo">
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">Page No</label>
-                                <input type="text" class="form-control" name="page_no">
+                                <input type="text" class="form-control" name="pageNo">
                             </div>
                             <div class="col-md-4 mb-3">
                                 <label class="form-label">Volume No</label>
-                                <input type="text" class="form-control" name="volume_no">
+                                <input type="text" class="form-control" name="volumeNo">
                             </div>
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">Grantor</label>
-                                <input type="text" class="form-control" name="grantor">
+                                <label class="form-label">Grantor/Assignor</label>
+                                <input type="text" class="form-control" name="grantor_assignor">
                             </div>
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">Grantee</label>
-                                <input type="text" class="form-control" name="grantee">
-                            </div>
-                            <div class="col-12 mb-3">
-                                <label class="form-label">Property Description</label>
-                                <textarea class="form-control" name="property_description" rows="2"></textarea>
+                                <label class="form-label">Grantee/Assignee</label>
+                                <input type="text" class="form-control" name="grantee_assignee">
                             </div>
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">Location</label>
-                                <input type="text" class="form-control" name="location">
+                                <label class="form-label">Street Name</label>
+                                <input type="text" class="form-control" name="streetName">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">House No</label>
+                                <input type="text" class="form-control" name="house_no">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">District Name</label>
+                                <input type="text" class="form-control" name="districtName">
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">Plot No</label>
@@ -421,11 +547,19 @@
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label">LGA</label>
-                                <input type="text" class="form-control" name="lga">
+                                <input type="text" class="form-control" name="LGA">
                             </div>
                             <div class="col-md-6 mb-3">
-                                <label class="form-label">District</label>
-                                <input type="text" class="form-control" name="district">
+                                <label class="form-label">Plot Size</label>
+                                <input type="text" class="form-control" name="plot_size">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Created By</label>
+                                <input type="text" class="form-control" name="CreatedBy">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Date Created</label>
+                                <input type="date" class="form-control" name="DateCreated">
                             </div>
                         </div>
                     </form>

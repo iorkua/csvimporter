@@ -308,8 +308,53 @@ def _format_value(value, numeric=False):
 def _normalize_string(value: Any) -> Optional[str]:
     if value is None:
         return None
+
+    try:
+        # Handle pandas/NumPy NaN values
+        if pd.isna(value):
+            return None
+    except Exception:
+        # pd.isna may raise if pandas isn't available for this type
+        pass
+
+    if isinstance(value, str):
+        string_value = value.strip()
+        if not string_value:
+            return None
+        if string_value.lower() in {"nan", "none", "null", "undefined", "n/a"}:
+            return None
+        return string_value
+
     string_value = str(value).strip()
-    return string_value or None
+    if not string_value:
+        return None
+    if string_value.lower() in {"nan", "none", "null", "undefined", "n/a"}:
+        return None
+    return string_value
+
+
+def _normalize_numeric_field(value: Any) -> Optional[str]:
+    """Normalize numeric fields, removing unnecessary .0 for whole numbers"""
+    if value is None or pd.isna(value):
+        return None
+    
+    # Convert to string first
+    string_value = str(value).strip()
+    
+    if not string_value:
+        return None
+    
+    # Try to convert to float and back to see if it's a whole number
+    try:
+        float_value = float(string_value)
+        # If it's a whole number, return as integer string
+        if float_value.is_integer():
+            return str(int(float_value))
+        else:
+            return str(float_value)
+    except (ValueError, TypeError):
+        # If it's not a number, return as is
+        return string_value
 
 
 def _collapse_whitespace(value: str) -> str:
@@ -1182,6 +1227,450 @@ async def apply_qc_fixes(session_id: str, payload: QCFixRequest):
         'updated_qc_issues': session_data['qc_issues'],
         'updated_grouping_preview': session_data['grouping_preview']
     }
+
+
+# ========== PRA HELPER FUNCTIONS ==========
+
+def _process_pra_data(df):
+    """Process PRA CSV data and split into property_records and file_numbers data"""
+    
+    # Normalize column names to handle variations
+    df.columns = df.columns.str.strip()
+    
+    # Create property_records data
+    property_records = []
+    file_numbers = []
+    
+    for index, row in df.iterrows():
+        # Generate tracking ID
+        tracking_id = _generate_tracking_id()
+
+        # Normalize frequently used fields once
+        mls_f_no = _normalize_string(row.get('mlsFNo'))
+        transaction_type = _normalize_string(row.get('transaction_type'))
+        transaction_date = _normalize_string(row.get('transaction_date'))
+        serial_no = _normalize_numeric_field(row.get('SerialNo'))
+        page_no = _normalize_numeric_field(row.get('pageNo'))
+        volume_no = _normalize_numeric_field(row.get('volumeNo'))
+        grantor = _normalize_string(row.get('Grantor/Assignor'))
+        grantee = _normalize_string(row.get('Grantee/Assignee'))
+        street_name = _normalize_string(row.get('streetName'))
+        house_no = _normalize_string(row.get('house_no'))
+        district_name = _normalize_string(row.get('districtName'))
+        plot_no = _normalize_string(row.get('plot_no'))
+        lga = _normalize_string(row.get('LGA'))
+        plot_size = _normalize_string(row.get('plot_size'))
+        created_by = _normalize_string(row.get('CreatedBy')) or 1
+        date_created = _normalize_string(row.get('DateCreated'))
+
+        # Build property record
+        property_record = {
+            'mlsFNo': mls_f_no,
+            'fileno': mls_f_no,  # Same as mlsFNo
+            'transaction_type': transaction_type,
+            'transaction_date': transaction_date,
+            'serialNo': serial_no,
+            'SerialNo': serial_no,
+            'pageNo': page_no,
+            'volumeNo': volume_no,
+            'regNo': _build_pra_reg_no(serial_no, page_no, volume_no),
+            'instrument_type': transaction_type,  # Same as transaction_type
+            'Grantor': grantor,
+            'grantor_assignor': grantor,
+            'Grantee': grantee,
+            'grantee_assignee': grantee,
+            'property_description': _combine_location(row.get('districtName'), row.get('LGA')),
+            'location': _combine_location(row.get('districtName'), row.get('LGA')),
+            'streetName': street_name,
+            'house_no': house_no,
+            'districtName': district_name,
+            'plot_no': plot_no,
+            'LGA': lga,
+            'lgsaOrCity': lga,
+            'source': 'PRA',
+            'plot_size': plot_size,
+            'migrated_by': 1,
+            'created_by': created_by,
+            'CreatedBy': created_by,
+            'date_created': date_created,
+            'DateCreated': date_created,
+            'migration_source': 'PRA',
+            'hasIssues': False  # Will be set by QC validation
+        }
+
+        # Build file number record
+        file_number_record = {
+            'mlsfNo': mls_f_no,
+            'FileName': grantee,  # Grantee as filename
+            'location': _combine_location(row.get('districtName'), row.get('LGA')),
+            'created_by': created_by,
+            'CreatedBy': created_by,
+            'type': 'MLS',
+            'SOURCE': 'PRA',
+            'plot_no': plot_no,
+            'tracking_id': tracking_id,
+            'hasIssues': False  # Will be set by QC validation
+        }
+        
+        property_records.append(property_record)
+        file_numbers.append(file_number_record)
+    
+    return property_records, file_numbers
+
+
+def _build_pra_reg_no(serial, page, volume):
+    """Build regNo from SerialNo/pageNo/volumeNo"""
+    if serial and page and volume:
+        return f"{serial}/{page}/{volume}"
+    return None
+
+
+def _run_pra_qc_validation(records):
+    """Run QC validation on PRA records (same rules as file indexing)"""
+    qc_issues = {
+        'padding': [],
+        'year': [],
+        'spacing': [],
+        'temp': [],
+        'missing_file_number': []
+    }
+    
+    for idx, record in enumerate(records):
+        file_number = _normalize_string(record.get('mlsFNo')) or ''
+        
+        # Check for missing file number
+        if not file_number:
+            qc_issues['missing_file_number'].append({
+                'row': idx + 1,
+                'message': 'File number is missing',
+                'file_number': ''
+            })
+            record['hasIssues'] = True
+            continue
+        
+        # Run same QC checks as file indexing
+        padding_issue = _check_padding_issue(file_number)
+        if padding_issue:
+            qc_issues['padding'].append({**padding_issue, 'row': idx + 1})
+            record['hasIssues'] = True
+            
+        year_issue = _check_year_issue(file_number)
+        if year_issue:
+            qc_issues['year'].append({**year_issue, 'row': idx + 1})
+            record['hasIssues'] = True
+            
+        spacing_issue = _check_spacing_issue(file_number)
+        if spacing_issue:
+            qc_issues['spacing'].append({**spacing_issue, 'row': idx + 1})
+            record['hasIssues'] = True
+            
+        temp_issue = _check_temp_issue(file_number)
+        if temp_issue:
+            qc_issues['temp'].append({**temp_issue, 'row': idx + 1})
+            record['hasIssues'] = True
+    
+    return qc_issues
+
+
+def _detect_pra_duplicates(records):
+    """Detect duplicate file numbers within CSV and against database"""
+    duplicates = {
+        'csv': [],
+        'database': []
+    }
+    
+    # Check for CSV duplicates
+    file_number_counts = {}
+    for record in records:
+        file_number = _normalize_string(record.get('mlsFNo'))
+        if file_number:
+            if file_number not in file_number_counts:
+                file_number_counts[file_number] = []
+            file_number_counts[file_number].append(record)
+    
+    # Find CSV duplicates (more than 1 occurrence)
+    for file_number, occurrences in file_number_counts.items():
+        if len(occurrences) > 1:
+            duplicates['csv'].append({
+                'file_number': file_number,
+                'count': len(occurrences),
+                'records': occurrences
+            })
+    
+    # Check for database duplicates
+    db = SessionLocal()
+    try:
+        from sqlalchemy import text
+        
+        for file_number in file_number_counts.keys():
+            if file_number:
+                # Check in property_records table
+                result = db.execute(text("""
+                    SELECT mlsFNo, Grantee, transaction_type, plot_no, prop_id 
+                    FROM property_records 
+                    WHERE mlsFNo = :file_number
+                """), {'file_number': file_number})
+                
+                existing_records = result.fetchall()
+                if existing_records:
+                    duplicates['database'].append({
+                        'file_number': file_number,
+                        'count': len(existing_records),
+                        'records': [dict(record._mapping) for record in existing_records]
+                    })
+    except Exception:
+        pass  # Ignore database errors for duplicate detection
+    finally:
+        db.close()
+    
+    return duplicates
+
+
+def _import_property_record(db, record, timestamp):
+    """Import a single property record to property_records table"""
+    from sqlalchemy import text
+    
+    # Check if record already exists
+    existing = db.execute(text("""
+        SELECT id FROM property_records WHERE mlsFNo = :file_number
+    """), {'file_number': record['mlsFNo']}).first()
+    
+    if existing:
+        # Update existing record
+        db.execute(text("""
+            UPDATE property_records SET
+                transaction_type = :transaction_type,
+                transaction_date = :transaction_date,
+                serialNo = :serialNo,
+                pageNo = :pageNo,
+                volumeNo = :volumeNo,
+                regNo = :regNo,
+                instrument_type = :instrument_type,
+                Grantor = :Grantor,
+                Grantee = :Grantee,
+                property_description = :property_description,
+                location = :location,
+                streetName = :streetName,
+                house_no = :house_no,
+                districtName = :districtName,
+                plot_no = :plot_no,
+                lgsaOrCity = :lgsaOrCity,
+                plot_size = :plot_size,
+                prop_id = :prop_id,
+                updated_at = :updated_at
+            WHERE mlsFNo = :mlsFNo
+        """), {
+            **record,
+            'updated_at': timestamp
+        })
+    else:
+        # Insert new record
+        db.execute(text("""
+            INSERT INTO property_records (
+                mlsFNo, fileno, transaction_type, transaction_date, serialNo, pageNo, volumeNo, regNo,
+                instrument_type, Grantor, Grantee, property_description, location, streetName, house_no,
+                districtName, plot_no, lgsaOrCity, source, plot_size, migrated_by, prop_id, created_at,
+                created_by, date_created, migration_source
+            ) VALUES (
+                :mlsFNo, :fileno, :transaction_type, :transaction_date, :serialNo, :pageNo, :volumeNo, :regNo,
+                :instrument_type, :Grantor, :Grantee, :property_description, :location, :streetName, :house_no,
+                :districtName, :plot_no, :lgsaOrCity, :source, :plot_size, :migrated_by, :prop_id, :created_at,
+                :created_by, :date_created, :migration_source
+            )
+        """), {
+            **record,
+            'created_at': timestamp
+        })
+
+
+def _import_file_number_record(db, record, timestamp):
+    """Import a single file number record to fileNumber table"""
+    from sqlalchemy import text
+    
+    # Check if record already exists
+    existing = db.execute(text("""
+        SELECT id FROM fileNumber WHERE mlsfNo = :file_number
+    """), {'file_number': record['mlsfNo']}).first()
+    
+    if existing:
+        # Update existing record
+        db.execute(text("""
+            UPDATE fileNumber SET
+                FileName = :FileName,
+                location = :location,
+                plot_no = :plot_no,
+                updated_at = :updated_at
+            WHERE mlsfNo = :mlsfNo
+        """), {
+            **record,
+            'updated_at': timestamp
+        })
+    else:
+        # Insert new record
+        db.execute(text("""
+            INSERT INTO fileNumber (
+                mlsfNo, FileName, created_at, location, created_by, type, SOURCE, plot_no, tracking_id
+            ) VALUES (
+                :mlsfNo, :FileName, :created_at, :location, :created_by, :type, :SOURCE, :plot_no, :tracking_id
+            )
+        """), {
+            **record,
+            'created_at': timestamp
+        })
+
+
+# ========== PRA IMPORT ENDPOINTS ==========
+
+@app.post("/api/upload-pra")
+async def upload_pra(file: UploadFile = File(...)):
+    """Upload and process CSV/Excel file for PRA import preview"""
+    
+    try:
+        if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+            raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+
+        session_id = str(uuid.uuid4())
+        content = await file.read()
+
+        if file.filename.endswith('.csv'):
+            dataframe = pd.read_csv(
+                io.BytesIO(content),
+                na_values=['', 'NULL', 'null', 'NaN'],
+                keep_default_na=False
+            )
+        else:
+            dataframe = pd.read_excel(
+                io.BytesIO(content),
+                na_values=['', 'NULL', 'null', 'NaN'],
+                keep_default_na=False
+            )
+
+        # Process PRA data
+        property_records, file_numbers = _process_pra_data(dataframe)
+        
+        # Assign property IDs to both tables
+        # Get the next property ID counter that works for all tables
+        next_prop_id_counter = _get_next_property_id_counter()
+        
+        # Assign property IDs to property records
+        for i, record in enumerate(property_records):
+            prop_id = str(next_prop_id_counter + i)
+            record['prop_id'] = prop_id
+        
+        # Assign property IDs to file numbers (continue counter)
+        for i, record in enumerate(file_numbers):
+            prop_id = str(next_prop_id_counter + len(property_records) + i)
+            record['prop_id'] = prop_id
+        
+        # Run QC validation on both record types
+        qc_property_records = _run_pra_qc_validation(property_records)
+        qc_file_numbers = _run_pra_qc_validation(file_numbers)
+        
+        # Combine QC results
+        qc_issues = {
+            'property_records': qc_property_records,
+            'file_numbers': qc_file_numbers
+        }
+        
+        # Detect duplicates for both record types
+        duplicates_property = _detect_pra_duplicates(property_records)
+        duplicates_file = _detect_pra_duplicates(file_numbers)
+        
+        # Combine duplicate results
+        duplicates = {
+            'property_records': duplicates_property,
+            'file_numbers': duplicates_file
+        }
+
+        if not hasattr(app, 'sessions'):
+            app.sessions = {}
+
+        app.sessions[session_id] = {
+            "filename": file.filename,
+            "upload_time": datetime.now(),
+            "type": "pra",
+            "property_records": property_records,
+            "file_numbers": file_numbers,
+            "qc_issues": qc_issues,
+            "duplicates": duplicates
+        }
+
+        # Calculate statistics
+        total_records = len(property_records)
+        duplicate_count = len(duplicates.get('csv', [])) + len(duplicates.get('database', []))
+        validation_issues = sum(len(issues) for issues in qc_issues.values())
+        ready_records = total_records - validation_issues
+
+        return {
+            "session_id": session_id,
+            "filename": file.filename,
+            "total_records": total_records,
+            "duplicate_count": duplicate_count,
+            "validation_issues": validation_issues,
+            "ready_records": ready_records,
+            "property_records": property_records,
+            "file_numbers": file_numbers,
+            "duplicates": duplicates,
+            "issues": qc_issues
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+
+
+@app.post("/api/import-pra/{session_id}")
+async def import_pra(session_id: str):
+    """Import PRA data to property_records and fileNumber tables"""
+    if not hasattr(app, 'sessions') or session_id not in app.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = app.sessions[session_id]
+    if session_data.get('type') != 'pra':
+        raise HTTPException(status_code=400, detail="Invalid session type for PRA import")
+
+    db = SessionLocal()
+    property_records_count = 0
+    file_numbers_count = 0
+    now = datetime.utcnow()
+
+    try:
+        # Import property records
+        for record in session_data["property_records"]:
+            # Skip records with issues if configured to do so
+            if record.get('hasIssues', False):
+                continue
+                
+            _import_property_record(db, record, now)
+            property_records_count += 1
+
+        # Import file numbers
+        for record in session_data["file_numbers"]:
+            # Skip records with issues if configured to do so
+            if record.get('hasIssues', False):
+                continue
+                
+            _import_file_number_record(db, record, now)
+            file_numbers_count += 1
+
+        db.commit()
+
+        # Clean up session
+        del app.sessions[session_id]
+
+        return {
+            "success": True,
+            "imported_count": property_records_count + file_numbers_count,
+            "property_records_count": property_records_count,
+            "file_numbers_count": file_numbers_count
+        }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
