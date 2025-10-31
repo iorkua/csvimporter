@@ -22,7 +22,7 @@ A FastAPI-based web application for importing and managing CSV data with multi-t
 
 ### Option 1: Using the Batch File (Recommended)
 
-1. **Clone or download the repository**
+1. **Clone or download the repository***
    ```powershell
    git clone https://github.com/iorkua/csvimporter.git
    cd csvimporter
@@ -65,11 +65,12 @@ A FastAPI-based web application for importing and managing CSV data with multi-t
    ```
 
 5. **Configure database connection**
-   - Create a `.env` file in the root directory
-   - Add your database connection string:
+   - Copy the environment template:
+     ```powershell
+     Copy-Item .env.example .env
      ```
-     DATABASE_CONNECTION_STRING=your_connection_string_here
-     ```
+   - Edit `.env` with your actual database credentials and settings
+   - **Never commit the `.env` file to version control!**
 
 6. **Run the application**
    ```powershell
@@ -123,10 +124,27 @@ csvimporter/
    - Create a database for the application
    - Update connection string in `.env` file
 
-2. **Environment Variables**
-   Create a `.env` file in the root directory:
+2. **Environment Variables** ⚠️ **IMPORTANT SECURITY NOTE**
+   
+   **DO NOT commit the `.env` file to version control!** It contains sensitive credentials.
+   
+   Create a `.env` file in the root directory by copying the template:
+   ```powershell
+   Copy-Item .env.example .env
    ```
-   DATABASE_CONNECTION_STRING=Driver={ODBC Driver 17 for SQL Server};Server=your_server;Database=your_database;Trusted_Connection=yes;
+   
+   Then edit `.env` with your actual values:
+   ```
+   # Database Configuration (SQL Server)
+   DB_SQLSRV_HOST=your_server_host
+   DB_SQLSRV_PORT=1433
+   DB_SQLSRV_DATABASE=your_database_name
+   DB_SQLSRV_USERNAME=your_username
+   DB_SQLSRV_PASSWORD=your_password
+   DB_SQLSRV_DRIVER=ODBC Driver 17 for SQL Server
+   
+   # Security Settings
+   SECRET_KEY=generate-a-strong-secret-key-here
    ```
 
 ### Application Settings
@@ -231,13 +249,28 @@ python scripts\add_missing_columns.py
 - Enable debug mode for detailed error information
 - Check browser console for JavaScript errors
 
+## Security ⚠️
+
+### Environment Variables
+- **NEVER commit `.env` files** - they contain sensitive credentials
+- Use `.env.example` as a template for required environment variables
+- Keep database passwords, secret keys, and API tokens secure
+- Use strong, unique passwords for production environments
+
+### Database Security
+- Use dedicated database users with minimal required permissions
+- Enable SQL Server authentication and encryption in production
+- Regularly rotate database credentials
+- Monitor database access logs
+
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Add tests if applicable
-5. Submit a pull request
+5. **Ensure no sensitive data in commits** (check `.env` files)
+6. Submit a pull request
 
 ## Dependencies
 
