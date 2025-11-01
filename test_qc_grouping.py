@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 
 import pandas as pd
-from main import process_file_indexing_data, _run_qc_validation, _build_grouping_preview
+from app.services.file_indexing_service import (
+    _build_grouping_preview,
+    _run_qc_validation,
+    process_file_indexing_data,
+)
 
 # Test QC fix affecting grouping matches
 print("Testing QC fix impact on grouping matches...")
