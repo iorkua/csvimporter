@@ -56,6 +56,43 @@
     max-width: 150px;
 }
 
+.preview-table,
+#picRecordsTable,
+#picCofoTable {
+    font-size: 0.8125rem;
+    min-width: 1200px;
+}
+
+.preview-table thead th,
+table.preview-table thead th,
+#picRecordsTable thead th,
+#picCofoTable thead th {
+    background: linear-gradient(135deg, #343a40 0%, #212529 100%) !important;
+    color: #f8f9fa !important;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    font-size: 0.75rem !important;
+    border-bottom: 0 !important;
+    border-top: 0 !important;
+    border-left: 1px solid rgba(255, 255, 255, 0.1) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+.preview-table tbody td,
+.preview-table thead th {
+    white-space: nowrap;
+    vertical-align: middle;
+    padding: 0.5rem 0.65rem;
+}
+
+.preview-table tbody tr:hover {
+    background-color: rgba(13, 110, 253, 0.06);
+}
+
+.preview-table tbody tr.table-warning:hover {
+    background-color: rgba(255, 193, 7, 0.25) !important;
+}
+
 .editable-cell {
     cursor: pointer;
     position: relative;

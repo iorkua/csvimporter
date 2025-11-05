@@ -1,47 +1,12 @@
-const FILE_HISTORY_QC_CATEGORY_CONFIG = [
-    {
-        key: 'padding',
-        label: 'Padding Issues',
-        tone: 'warning',
-        severity: 'Medium',
-        icon: 'fa-align-left',
-        description: 'Trim leading zeros so file numbers line up with PRA records.'
-    },
-    {
-        key: 'year',
-        label: 'Year Issues',
-        tone: 'danger',
-        severity: 'High',
-        icon: 'fa-calendar-times',
-        description: 'Expand two-digit years to four digits before importing.'
-    },
-    {
-        key: 'spacing',
-        label: 'Spacing Issues',
-        tone: 'info',
-        severity: 'Medium',
-        icon: 'fa-text-width',
-        description: 'Remove stray spaces or dashes to normalize separators.'
-    },
-    {
-        key: 'temp',
-        label: 'TEMP Issues',
-        tone: 'secondary',
-        severity: 'Low',
-    icon: 'fa-temperature-half',
-        description: 'Standardize TEMP notation so the archive can index it.'
-    },
-    {
-        key: 'missing_file_number',
-        label: 'Missing File Numbers',
-        tone: 'danger',
-        severity: 'High',
-        icon: 'fa-circle-exclamation',
-        description: 'Provide a file number before the record can be imported.'
-    }
+const PIC_QC_CATEGORY_CONFIG = [
+    { key: 'padding', label: 'Padding Issues', tone: 'warning', severity: 'Medium' },
+    { key: 'year', label: 'Year Issues', tone: 'danger', severity: 'High' },
+    { key: 'spacing', label: 'Spacing Issues', tone: 'info', severity: 'Medium' },
+    { key: 'temp', label: 'TEMP Issues', tone: 'secondary', severity: 'Low' },
+    { key: 'missing_file_number', label: 'Missing File Numbers', tone: 'danger', severity: 'High' }
 ];
 
-const FILE_HISTORY_QC_TONE_CLASSMAP = {
+const PIC_QC_TONE_CLASSMAP = {
     warning: { border: 'border-warning', text: 'text-warning' },
     danger: { border: 'border-danger', text: 'text-danger' },
     info: { border: 'border-info', text: 'text-info' },
@@ -50,10 +15,13 @@ const FILE_HISTORY_QC_TONE_CLASSMAP = {
     primary: { border: 'border-primary', text: 'text-primary' }
 };
 
-class FileHistoryImportManager {
+const PIC_FILE_NUMBER_ISSUE_TYPES = ['padding', 'year', 'spacing', 'temp', 'missing_file_number'];
+
+class PropertyIndexCardImportManager {
     constructor() {
         this.propertyRecords = [];
         this.cofoRecords = [];
+        this.fileNumberRecords = [];
         this.filteredRows = [];
         this.currentTab = 'records';
         this.currentFilter = 'all';
@@ -63,75 +31,73 @@ class FileHistoryImportManager {
         this.qcIssues = {};
         this.loadingModal = null;
         this.isUploading = false;
+        this.isApplyingFixAll = false;
+        this.activeInlineEdit = null;
         this.categoryConfig = {};
         this.categoryOrder = [];
-        this.filterControls = document.getElementById('historyFilterControls');
-        this.fileNumberIssueTypes = ['padding', 'year', 'spacing', 'temp', 'missing_file_number'];
-        this.activeInlineEdit = null;
-        this.fixAllButton = document.getElementById('historyFileNumberFixAllBtn');
-        this.fixAllButtonWrapper = document.getElementById('historyFileNumberFixAllWrapper');
-        this.isApplyingFixAll = false;
-        this.testControlSelect = document.getElementById('historyTestControlSelect');
-        this.testControlMode = this.normalizeMode(this.testControlSelect?.value);
-        this.clearModeBtn = document.getElementById('historyClearModeBtn');
-        this.clearDataModalElement = document.getElementById('historyClearDataModal');
-        this.clearDataModal = (this.clearDataModalElement && window.bootstrap?.Modal)
-            ? new window.bootstrap.Modal(this.clearDataModalElement)
+        this.fileNumberIssueTypes = [...PIC_FILE_NUMBER_ISSUE_TYPES];
+        this.filterControls = document.getElementById('picFilterControls');
+        this.fixAllButton = document.getElementById('picFileNumberFixAllBtn');
+        this.fixAllButtonWrapper = document.getElementById('picFileNumberFixAllWrapper');
+        this.testControlSelect = document.getElementById('picTestControlSelect');
+        this.testControlMode = this.testControlSelect?.value && this.testControlSelect.value !== ''
+            ? this.testControlSelect.value.toUpperCase()
             : null;
-        this.confirmClearDataBtn = document.getElementById('historyConfirmClearDataBtn');
-        this.clearModeLabel = document.getElementById('historyClearModeLabel');
-        this.clearModeBtnOriginalHTML = this.clearModeBtn ? this.clearModeBtn.innerHTML : '';
-        this.confirmClearBtnOriginalHTML = this.confirmClearDataBtn ? this.confirmClearDataBtn.innerHTML : '';
+        this.importButton = document.getElementById('importPicBtn');
+        this.uploadManuallyDisabled = false;
+        this.clearModeBtn = document.getElementById('picClearModeBtn');
+        this.confirmClearDataBtn = document.getElementById('picConfirmClearDataBtn');
+        const clearDataModalElement = document.getElementById('picClearDataModal');
+        this.clearDataModal = (this.clearModeBtn && clearDataModalElement && window.bootstrap && window.bootstrap.Modal)
+            ? new window.bootstrap.Modal(clearDataModalElement)
+            : null;
         this.isClearingMode = false;
-        this.readyRecordCount = 0;
-        this.uploadDisabledOverride = false;
-        this.toolbarModeContainer = document.getElementById('historyToolbarMode');
-        this.toolbarModeValue = document.getElementById('historyToolbarModeValue');
-        FILE_HISTORY_QC_CATEGORY_CONFIG.forEach((cfg) => {
+
+        PIC_QC_CATEGORY_CONFIG.forEach((cfg) => {
             this.categoryConfig[cfg.key] = { ...cfg };
             this.categoryOrder.push(cfg.key);
         });
 
         this.registerEventHandlers();
         this.updateFilterButtons();
-        this.resetSessionData({ keepFileInput: true, keepMode: true });
-        this.setTestControlMode(this.testControlMode);
-        this.updateUploadButtonState();
+        this.resetSessionData({ keepFileInput: true });
+        this.updateModeButtons();
     }
 
     registerEventHandlers() {
-        const uploadForm = document.getElementById('historyUploadForm');
+        const uploadForm = document.getElementById('picUploadForm');
         if (uploadForm) {
             uploadForm.addEventListener('submit', (event) => this.handleUploadSubmit(event));
         }
 
-        const fileInput = document.getElementById('historyFileInput');
-        if (fileInput) {
-            fileInput.addEventListener('change', () => this.updateUploadButtonState());
+        const uploadBtn = document.getElementById('picUploadBtn');
+        if (uploadBtn) {
+            uploadBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                this.handleUploadSubmit(event);
+            });
         }
+
+        const fileInput = document.getElementById('picFileInput');
+        fileInput?.addEventListener('change', () => this.updateModeButtons());
 
         if (this.testControlSelect) {
             this.testControlSelect.addEventListener('change', (event) => {
-                this.handleModeChange(event.target.value || '');
+                const value = event.target.value || '';
+                this.testControlMode = value ? value.toUpperCase() : null;
+                this.updateModeButtons();
             });
         }
 
         if (this.clearModeBtn) {
-            this.clearModeBtn.addEventListener('click', (event) => {
-                if (!this.ensureModeSelected()) {
-                    event.preventDefault();
+            this.clearModeBtn.addEventListener('click', () => {
+                if (!this.modeIsSelected()) {
+                    this.showAlert('Select a Data Mode before clearing data.', 'warning');
+                    this.testControlSelect?.focus();
                     return;
                 }
-                if (this.clearModeLabel) {
-                    this.clearModeLabel.textContent = this.testControlMode || 'Not selected';
-                }
                 if (this.clearDataModal) {
-                    event.preventDefault();
                     this.clearDataModal.show();
-                } else if (!window.confirm(`Clear File History data in ${this.testControlMode} mode?`)) {
-                    event.preventDefault();
-                } else {
-                    this.handleClearMode();
                 }
             });
         }
@@ -140,42 +106,35 @@ class FileHistoryImportManager {
             this.confirmClearDataBtn.addEventListener('click', () => this.handleClearMode());
         }
 
-        const uploadBtn = document.getElementById('historyUploadBtn');
-        if (uploadBtn) {
-            uploadBtn.addEventListener('click', (event) => {
-                event.preventDefault();
-                this.handleUploadSubmit(event);
-            });
-        }
-
-        document.getElementById('historyShowAllBtn')?.addEventListener('click', () => this.setFilter('all'));
-        document.getElementById('historyShowIssuesBtn')?.addEventListener('click', () => this.setFilter('issues'));
-        document.getElementById('historyShowValidBtn')?.addEventListener('click', () => this.setFilter('valid'));
-
-        const tabs = document.querySelectorAll('#historyPreviewTabs button[data-bs-toggle="tab"]');
-        tabs.forEach((tab) => {
-            tab.addEventListener('shown.bs.tab', (event) => {
-                const target = event.target.getAttribute('data-bs-target');
-                if (target === '#history-records-pane') {
-                    this.handleTabChange('records');
-                } else if (target === '#history-cofo-pane') {
-                    this.handleTabChange('cofo');
-                } else if (target === '#history-fileno-pane') {
-                    this.handleTabChange('file-number-qc');
-                }
-            });
-        });
+        document.getElementById('picShowAllBtn')?.addEventListener('click', () => this.setFilter('all'));
+        document.getElementById('picShowIssuesBtn')?.addEventListener('click', () => this.setFilter('issues'));
+        document.getElementById('picShowValidBtn')?.addEventListener('click', () => this.setFilter('valid'));
 
         if (this.fixAllButton) {
             this.fixAllButton.addEventListener('click', () => this.handleFileNumberFixAll());
         }
 
-        const importBtn = document.getElementById('importHistoryBtn');
-        if (importBtn) {
-            importBtn.addEventListener('click', () => this.importData());
+        const tabs = document.querySelectorAll('#picPreviewTabs button[data-bs-toggle="tab"]');
+        tabs.forEach((tab) => {
+            tab.addEventListener('shown.bs.tab', (event) => {
+                const target = event.target.getAttribute('data-bs-target');
+                if (target === '#pic-records-pane') {
+                    this.handleTabChange('records');
+                } else if (target === '#pic-cofo-pane') {
+                    this.handleTabChange('cofo');
+                } else if (target === '#pic-file-numbers-pane') {
+                    this.handleTabChange('file-numbers');
+                } else if (target === '#pic-fileno-pane') {
+                    this.handleTabChange('file-number-qc');
+                }
+            });
+        });
+
+        if (this.importButton) {
+            this.importButton.addEventListener('click', () => this.importData());
         }
 
-        const pagination = document.getElementById('historyPagination');
+        const pagination = document.getElementById('picPagination');
         if (pagination) {
             pagination.addEventListener('click', (event) => {
                 const button = event.target.closest('button[data-page]');
@@ -189,200 +148,11 @@ class FileHistoryImportManager {
                 }
             });
         }
-
-        this.updateModeControls();
-        this.updateUploadButtonState();
-    }
-
-    normalizeMode(mode) {
-        const normalized = (mode || '').toString().trim().toUpperCase();
-        return normalized === 'TEST' || normalized === 'PRODUCTION' ? normalized : '';
-    }
-
-    setTestControlMode(mode) {
-        const normalized = this.normalizeMode(mode);
-        this.testControlMode = normalized;
-
-        if (this.testControlSelect) {
-            if (normalized) {
-                this.testControlSelect.value = normalized;
-            } else {
-                this.testControlSelect.value = '';
-            }
-        }
-
-        if (this.clearModeLabel && !this.isClearingMode) {
-            this.clearModeLabel.textContent = normalized || 'Not selected';
-        }
-
-        this.updateToolbarModeLabel();
-        this.updateModeControls();
-        this.updateUploadButtonState();
-        this.setImportButtonState(this.readyRecordCount);
-    }
-
-    handleModeChange(value) {
-        const normalized = this.normalizeMode(value);
-        const previous = this.testControlMode;
-        this.setTestControlMode(normalized);
-
-        if (this.sessionId && previous && normalized && previous !== normalized) {
-            this.showAlert('Data mode changed. Clearing current File History preview to avoid mixing environments.', 'info');
-            this.resetSessionData({ keepFileInput: false, keepMode: true });
-        }
-    }
-
-    modeIsSelected() {
-        return this.testControlMode === 'TEST' || this.testControlMode === 'PRODUCTION';
-    }
-
-    getModeDisplayLabel() {
-        if (!this.modeIsSelected()) {
-            return 'Not selected';
-        }
-        return this.testControlMode === 'PRODUCTION' ? 'Production' : 'Test';
-    }
-
-    updateToolbarModeLabel() {
-        if (!this.toolbarModeContainer || !this.toolbarModeValue) {
-            return;
-        }
-
-        const modeLabel = this.getModeDisplayLabel();
-        this.toolbarModeValue.textContent = modeLabel;
-
-        if (this.modeIsSelected()) {
-            this.toolbarModeContainer.classList.remove('text-danger');
-            this.toolbarModeContainer.classList.add('text-muted');
-        } else {
-            this.toolbarModeContainer.classList.add('text-danger');
-            this.toolbarModeContainer.classList.remove('text-muted');
-        }
-    }
-
-    ensureModeSelected() {
-        if (this.modeIsSelected()) {
-            return true;
-        }
-
-        this.showAlert('Select a data mode (Production or Test) before continuing.', 'warning');
-        this.testControlSelect?.focus();
-        return false;
-    }
-
-    updateModeControls() {
-        const modeSelected = this.modeIsSelected();
-
-        if (this.clearModeBtn) {
-            this.clearModeBtn.disabled = !modeSelected || this.isClearingMode || this.isUploading;
-        }
-
-        if (this.confirmClearDataBtn) {
-            this.confirmClearDataBtn.disabled = !modeSelected || this.isClearingMode;
-        }
-
-        if (this.clearModeLabel && !this.isClearingMode) {
-            this.clearModeLabel.textContent = modeSelected ? this.testControlMode : 'Not selected';
-        }
-    }
-
-    updateUploadButtonState() {
-        const uploadBtn = document.getElementById('historyUploadBtn');
-        const fileInput = document.getElementById('historyFileInput');
-
-        if (fileInput) {
-            fileInput.disabled = this.uploadDisabledOverride || this.isUploading;
-        }
-
-        if (this.uploadDisabledOverride || this.isUploading) {
-            if (uploadBtn) {
-                uploadBtn.disabled = true;
-            }
-            return;
-        }
-
-        const fileSelected = Boolean(fileInput?.files?.length);
-        const shouldEnable = this.modeIsSelected() && fileSelected && !this.isClearingMode;
-
-        if (uploadBtn) {
-            uploadBtn.disabled = !shouldEnable;
-        }
-    }
-
-    setClearingState(isClearing) {
-        this.isClearingMode = Boolean(isClearing);
-
-        if (this.clearModeBtn) {
-            if (this.isClearingMode) {
-                this.clearModeBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Clearing...';
-            } else if (this.clearModeBtnOriginalHTML) {
-                this.clearModeBtn.innerHTML = this.clearModeBtnOriginalHTML;
-            }
-        }
-
-        if (this.confirmClearDataBtn) {
-            if (this.isClearingMode) {
-                this.confirmClearDataBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Clearing...';
-            } else if (this.confirmClearBtnOriginalHTML) {
-                this.confirmClearDataBtn.innerHTML = this.confirmClearBtnOriginalHTML;
-            }
-        }
-
-        this.updateModeControls();
-        this.updateUploadButtonState();
-    }
-
-    async handleClearMode() {
-        if (!this.modeIsSelected() || this.isClearingMode) {
-            return;
-        }
-
-        const modeLabel = this.testControlMode === 'TEST' ? 'TEST' : 'PRODUCTION';
-
-        this.setClearingState(true);
-
-        try {
-            const response = await fetch('/api/file-history/clear-data', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode: this.testControlMode })
-            });
-
-            if (!response.ok) {
-                throw new Error(await this.extractErrorMessage(response));
-            }
-
-            const result = await response.json();
-            if (result && result.success === false) {
-                throw new Error(result.detail || 'Failed to clear data.');
-            }
-
-            const counts = result?.counts || {};
-            const detailEntries = Object.entries(counts);
-            const totalCleared = detailEntries.reduce((acc, [, value]) => acc + (Number(value) || 0), 0);
-            const detailText = detailEntries.length
-                ? detailEntries.map(([key, value]) => `${key}: ${Number(value) || 0}`).join(', ')
-                : 'No rows cleared';
-
-            const summary = totalCleared > 0
-                ? `Cleared ${totalCleared} ${modeLabel} rows (${detailText}).`
-                : `No ${modeLabel} rows found to clear.`;
-
-            this.showAlert(summary, 'success');
-        } catch (error) {
-            console.error('File history clear data failed:', error);
-            this.showAlert(error.message || 'Failed to clear data. Please try again.', 'danger');
-        } finally {
-            if (this.clearDataModal) {
-                this.clearDataModal.hide();
-            }
-            this.setClearingState(false);
-        }
     }
 
     handleUploadSubmit(event) {
         event.preventDefault();
-        const fileInput = document.getElementById('historyFileInput');
+        const fileInput = document.getElementById('picFileInput');
         const file = fileInput?.files?.[0];
 
         if (this.isUploading) {
@@ -390,12 +160,14 @@ class FileHistoryImportManager {
             return;
         }
 
-        if (!file) {
-            this.showAlert('Please select a CSV or Excel file to upload.', 'warning');
+        if (!this.modeIsSelected()) {
+            this.showAlert('Select a Data Mode before uploading.', 'warning');
+            this.testControlSelect?.focus();
             return;
         }
 
-        if (!this.ensureModeSelected()) {
+        if (!file) {
+            this.showAlert('Please select a CSV or Excel file to upload.', 'warning');
             return;
         }
 
@@ -415,15 +187,15 @@ class FileHistoryImportManager {
         this.disableUpload(true);
         this.showLoadingModal();
         this.isUploading = true;
-        this.updateModeControls();
-        this.setImportButtonState(this.readyRecordCount);
 
         const formData = new FormData();
-        formData.append('test_control', this.testControlMode);
         formData.append('file', file);
+        if (this.modeIsSelected()) {
+            formData.append('test_control', this.testControlMode);
+        }
 
         try {
-            const response = await fetch('/api/upload-file-history', {
+            const response = await fetch('/api/upload-pic', {
                 method: 'POST',
                 body: formData
             });
@@ -435,14 +207,14 @@ class FileHistoryImportManager {
             this.updateProgress(45, 'Processing data…');
             const result = await response.json();
 
-            if (result?.test_control) {
-                this.setTestControlMode(result.test_control);
-            }
-
             this.sessionId = result.session_id || null;
             this.propertyRecords = Array.isArray(result.property_records) ? result.property_records : [];
             this.cofoRecords = Array.isArray(result.cofo_records) ? result.cofo_records : [];
+            this.fileNumberRecords = Array.isArray(result.file_number_records) ? result.file_number_records : [];
             this.qcIssues = result.issues || {};
+            if (result.test_control) {
+                this.syncTestControl(result.test_control);
+            }
 
             this.updateProgress(70, 'Rendering preview…');
             this.updateStatistics(result);
@@ -451,19 +223,16 @@ class FileHistoryImportManager {
             this.setImportButtonState(result.ready_records);
             this.updateProgress(100, 'Ready');
 
-            this.showAlert(`${result.total_records || 0} file history rows processed successfully.`, 'success');
+            this.showAlert(`${result.total_records || 0} PIC rows processed successfully.`, 'success');
         } catch (error) {
-            console.error('File history upload failed:', error);
+            console.error('PIC upload failed:', error);
             this.showAlert(error.message || 'Upload failed. Please try again.', 'danger');
             this.resetSessionData({ keepFileInput: true });
         } finally {
             this.isUploading = false;
-            this.setImportButtonState(this.readyRecordCount);
             this.hideLoadingModal();
             this.showUploadProgress(false);
             this.disableUpload(false);
-            this.updateModeControls();
-            this.updateUploadButtonState();
         }
     }
 
@@ -498,14 +267,13 @@ class FileHistoryImportManager {
     }
 
     updateProgress(percent, labelText) {
-        const progressBar = document.getElementById('historyProgressBar');
-        const progressText = document.getElementById('historyProgressText');
+        const progressBar = document.getElementById('picProgressBar');
+        const progressText = document.getElementById('picProgressText');
 
         if (progressBar) {
             const value = Math.max(0, Math.min(Number(percent) || 0, 100));
             progressBar.style.width = `${value}%`;
             progressBar.setAttribute('aria-valuenow', value.toString());
-            progressBar.textContent = `${value}%`;
         }
 
         if (progressText && labelText) {
@@ -514,37 +282,25 @@ class FileHistoryImportManager {
     }
 
     showUploadProgress(visible) {
-        const progressContainer = document.getElementById('historyUploadProgress');
+        const progressContainer = document.getElementById('picUploadProgress');
         if (progressContainer) {
             progressContainer.style.display = visible ? 'block' : 'none';
         }
     }
 
     disableUpload(disabled) {
-        const uploadBtn = document.getElementById('historyUploadBtn');
-        const fileInput = document.getElementById('historyFileInput');
-
-        this.uploadDisabledOverride = Boolean(disabled);
-
-        if (disabled) {
-            if (uploadBtn) {
-                uploadBtn.disabled = true;
-            }
-            if (fileInput) {
-                fileInput.disabled = true;
-            }
-            return;
-        }
+        const fileInput = document.getElementById('picFileInput');
+        this.uploadManuallyDisabled = Boolean(disabled);
 
         if (fileInput) {
-            fileInput.disabled = this.isUploading;
+            fileInput.disabled = Boolean(disabled);
         }
 
-        this.updateUploadButtonState();
+        this.updateModeButtons();
     }
 
     showLoadingModal() {
-        const modalElement = document.getElementById('historyLoadingModal');
+        const modalElement = document.getElementById('picLoadingModal');
         if (!modalElement || !window.bootstrap?.Modal) {
             return;
         }
@@ -562,18 +318,17 @@ class FileHistoryImportManager {
     }
 
     resetSessionData(options = {}) {
-        const { keepFileInput = false, keepMode = true } = options;
+        const { keepFileInput = false } = options;
 
         this.propertyRecords = [];
         this.cofoRecords = [];
+        this.fileNumberRecords = [];
         this.filteredRows = [];
         this.sessionId = null;
         this.qcIssues = {};
         this.currentTab = 'records';
         this.currentFilter = 'all';
         this.currentPage = 1;
-        this.isApplyingFixAll = false;
-        this.readyRecordCount = 0;
 
         this.updateFilterButtons();
         this.clearTableBodies();
@@ -583,30 +338,27 @@ class FileHistoryImportManager {
         this.updateCounts();
         this.updateShowingInfo(0);
         this.renderPagination();
+        this.setImportButtonState(0);
         this.setTableVisibility();
         this.updateFileNumberFixAllState();
 
         if (!keepFileInput) {
-            const fileInput = document.getElementById('historyFileInput');
+            const fileInput = document.getElementById('picFileInput');
             if (fileInput) {
                 fileInput.value = '';
             }
         }
 
-        if (!keepMode) {
-            this.setTestControlMode('');
-        } else {
-            this.updateModeControls();
-            this.updateUploadButtonState();
-        }
-
-        this.updateToolbarModeLabel();
-        this.setImportButtonState(0);
+        this.isClearingMode = false;
+        this.setClearModeLoading(false);
+        this.updateModeButtons();
     }
 
     clearTableBodies() {
-        const recordsBody = document.getElementById('historyRecordsTableBody');
-        const cofoBody = document.getElementById('historyCofoTableBody');
+        const recordsBody = document.getElementById('picRecordsTableBody');
+        const cofoBody = document.getElementById('picCofoTableBody');
+        const fileNumbersBody = document.getElementById('picFileNumbersTableBody');
+        const qcBody = document.getElementById('picFileNumberQcBody');
 
         if (recordsBody) {
             recordsBody.innerHTML = '';
@@ -614,28 +366,32 @@ class FileHistoryImportManager {
         if (cofoBody) {
             cofoBody.innerHTML = '';
         }
-    }
-
-    hidePreviewSection() {
-        const previewSection = document.getElementById('historyPreviewSection');
-        if (previewSection) {
-            previewSection.style.display = 'none';
+        if (fileNumbersBody) {
+            fileNumbersBody.innerHTML = '';
+        }
+        if (qcBody) {
+            qcBody.innerHTML = '';
         }
     }
 
-    showPreviewSection() {
-        const previewSection = document.getElementById('historyPreviewSection');
+    hidePreviewSection() {
+        const previewSection = document.getElementById('picPreviewSection');
         if (previewSection) {
-            previewSection.style.display = 'block';
+            previewSection.style.display = 'none';
+        }
+
+        const validationPanel = document.getElementById('picValidationPanel');
+        if (validationPanel) {
+            validationPanel.style.display = 'none';
         }
     }
 
     resetValidationPanel() {
-        const panel = document.getElementById('historyValidationPanel');
-        const summaryContainer = document.getElementById('historyQcSummaryContainer');
-        const issuesBody = document.getElementById('historyQcIssuesBody');
-        const emptyState = document.getElementById('historyQcEmptyState');
-        const table = document.getElementById('historyQcIssuesTable');
+        const panel = document.getElementById('picValidationPanel');
+        const summaryContainer = document.getElementById('picQcSummaryContainer');
+        const issuesBody = document.getElementById('picQcIssuesBody');
+        const emptyState = document.getElementById('picQcEmptyState');
+        const table = document.getElementById('picQcIssuesTable');
 
         if (summaryContainer) {
             summaryContainer.innerHTML = '';
@@ -655,49 +411,48 @@ class FileHistoryImportManager {
     }
 
     resetStatistics() {
-        this.updateElementText('historyTotalRecords', 0);
-        this.updateElementText('historyDuplicateRecords', 0);
-        this.updateElementText('historyValidationIssues', 0);
-        this.updateElementText('historyReadyRecords', 0);
+        this.updateElementText('picTotalRecords', 0);
+        this.updateElementText('picReadyRecords', 0);
 
-        const statRow = document.getElementById('historyStatisticsRow');
+        const statRow = document.getElementById('picStatisticsRow');
         if (statRow) {
             statRow.style.display = 'none';
         }
     }
 
     updateStatistics(result) {
-        const total = result?.total_records ?? 0;
-        const duplicates = result?.duplicate_count ?? 0;
-        const validation = result?.validation_issues ?? 0;
-        const ready = result?.ready_records ?? 0;
+    const total = result?.total_records ?? 0;
+    const ready = result?.ready_records ?? 0;
 
-        this.updateElementText('historyTotalRecords', total);
-        this.updateElementText('historyDuplicateRecords', duplicates);
-        this.updateElementText('historyValidationIssues', validation);
-        this.updateElementText('historyReadyRecords', ready);
+        this.updateElementText('picTotalRecords', total);
+        this.updateElementText('picReadyRecords', ready);
 
-        const statRow = document.getElementById('historyStatisticsRow');
+        const statRow = document.getElementById('picStatisticsRow');
         if (statRow) {
-            statRow.style.display = 'flex';
+            statRow.style.display = total > 0 ? 'flex' : 'none';
         }
     }
 
     updatePreview() {
         this.updateCounts();
         this.setTableVisibility();
-        this.updateFileNumberFixAllState();
         this.currentTab = 'records';
         this.currentFilter = 'all';
         this.currentPage = 1;
         this.updateFilterButtons();
         this.applyFilter();
-        this.showPreviewSection();
+        this.updateFileNumberFixAllState();
+
+        const previewSection = document.getElementById('picPreviewSection');
+        if (previewSection) {
+            previewSection.style.display = 'block';
+        }
     }
 
     updateCounts() {
-        this.updateElementText('historyRecordsCount', this.propertyRecords.length);
-        this.updateElementText('historyCofoCount', this.cofoRecords.length);
+        this.updateElementText('picRecordsCount', this.propertyRecords.length);
+        this.updateElementText('picCofoCount', this.cofoRecords.length);
+        this.updateElementText('picFileNumberCount', this.fileNumberRecords.length);
         this.updateFileNumberIssueCount();
     }
 
@@ -717,9 +472,11 @@ class FileHistoryImportManager {
     }
 
     setTableVisibility() {
-        const recordsWrapper = document.getElementById('historyRecordsTableWrapper');
-        const cofoWrapper = document.getElementById('historyCofoTableWrapper');
-        const qcWrapper = document.getElementById('historyFileNumberQcWrapper');
+        const recordsWrapper = document.getElementById('picRecordsTableWrapper');
+        const cofoWrapper = document.getElementById('picCofoTableWrapper');
+        const fileNumbersWrapper = document.getElementById('picFileNumbersTableWrapper');
+        const qcWrapper = document.getElementById('picFileNumberQcWrapper');
+        const qcEmpty = document.getElementById('picFileNumberQcEmpty');
 
         if (recordsWrapper) {
             recordsWrapper.style.display = this.propertyRecords.length ? 'block' : 'none';
@@ -727,11 +484,20 @@ class FileHistoryImportManager {
         if (cofoWrapper) {
             cofoWrapper.style.display = this.cofoRecords.length ? 'block' : 'none';
         }
+        if (fileNumbersWrapper) {
+            fileNumbersWrapper.style.display = this.fileNumberRecords.length ? 'block' : 'none';
+        }
         if (qcWrapper) {
+            const hasIssues = this.countFileNumberIssues() > 0;
             if (this.currentTab === 'file-number-qc') {
-                qcWrapper.style.display = qcWrapper.dataset.hasIssues === 'true' ? 'block' : 'none';
+                qcWrapper.style.display = hasIssues ? 'block' : 'none';
+                qcWrapper.dataset.hasIssues = hasIssues ? 'true' : 'false';
             } else {
                 qcWrapper.style.display = 'none';
+            }
+
+            if (qcEmpty) {
+                qcEmpty.classList.toggle('d-none', hasIssues);
             }
         }
     }
@@ -743,36 +509,159 @@ class FileHistoryImportManager {
         this.filterControls.style.display = isVisible ? 'inline-flex' : 'none';
     }
 
-    setImportButtonState(readyRecords) {
-        const importBtn = document.getElementById('importHistoryBtn');
-        this.readyRecordCount = Number(readyRecords) || 0;
+    modeIsSelected() {
+        return this.testControlMode === 'TEST' || this.testControlMode === 'PRODUCTION';
+    }
 
+    syncTestControl(mode) {
+        if (!mode) {
+            return;
+        }
+        const normalized = mode.toString().toUpperCase();
+        if (normalized !== 'TEST' && normalized !== 'PRODUCTION') {
+            return;
+        }
+        this.testControlMode = normalized;
+        if (this.testControlSelect) {
+            this.testControlSelect.value = normalized;
+        }
+        this.updateModeButtons();
+    }
+
+    updateModeButtons() {
+        const uploadBtn = document.getElementById('picUploadBtn');
+        const fileInput = document.getElementById('picFileInput');
+        const modeSelected = this.modeIsSelected();
+        const hasFileSelected = Boolean(fileInput?.files?.length);
+
+        if (uploadBtn) {
+            if (this.uploadManuallyDisabled) {
+                uploadBtn.disabled = true;
+            } else {
+                uploadBtn.disabled = !(modeSelected && hasFileSelected);
+            }
+        }
+
+        if (this.importButton) {
+            const readyCount = Number(this.importButton.dataset.readyCount || 0);
+            const canImport = modeSelected && Boolean(this.sessionId) && readyCount > 0;
+            this.importButton.disabled = !canImport;
+        }
+
+        if (this.testControlSelect && modeSelected) {
+            this.testControlSelect.value = this.testControlMode;
+        }
+
+        if (this.clearModeBtn) {
+            if (this.isClearingMode) {
+                this.clearModeBtn.disabled = true;
+            } else {
+                this.clearModeBtn.disabled = !modeSelected;
+            }
+        }
+
+        if (this.confirmClearDataBtn) {
+            this.confirmClearDataBtn.disabled = !modeSelected || this.isClearingMode;
+        }
+    }
+
+    setClearModeLoading(isLoading) {
+        if (!this.clearModeBtn) {
+            return;
+        }
+
+        if (isLoading) {
+            if (!this.clearModeBtn.dataset.originalContent) {
+                this.clearModeBtn.dataset.originalContent = this.clearModeBtn.innerHTML;
+            }
+            this.clearModeBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Clearing...';
+        } else if (this.clearModeBtn.dataset.originalContent) {
+            this.clearModeBtn.innerHTML = this.clearModeBtn.dataset.originalContent;
+        }
+
+        this.clearModeBtn.disabled = isLoading || !this.modeIsSelected();
+        if (this.confirmClearDataBtn) {
+            this.confirmClearDataBtn.disabled = isLoading || !this.modeIsSelected();
+        }
+    }
+
+    async handleClearMode() {
+        if (!this.modeIsSelected() || this.isClearingMode) {
+            return;
+        }
+
+        const mode = this.testControlMode;
+        const modeLabel = mode === 'TEST' ? 'TEST' : 'PRODUCTION';
+
+        this.isClearingMode = true;
+        this.setClearModeLoading(true);
+
+        try {
+            const response = await fetch('/api/pic/clear-data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ mode })
+            });
+
+            if (!response.ok) {
+                const errorBody = await response.json().catch(() => ({}));
+                const message = errorBody.detail || 'Failed to clear data. Please try again.';
+                throw new Error(message);
+            }
+
+            const result = await response.json();
+            const counts = result.counts || {};
+            const numericCounts = Object.entries(counts).map(([key, value]) => ({
+                key,
+                value: Number(value) || 0
+            }));
+            const totalCleared = numericCounts.reduce((sum, entry) => sum + entry.value, 0);
+            const detailText = numericCounts
+                .map((entry) => `${entry.key}: ${entry.value}`)
+                .join(', ');
+
+            const summary = totalCleared > 0
+                ? `Cleared ${totalCleared} ${modeLabel} row${totalCleared === 1 ? '' : 's'} (${detailText}).`
+                : `No ${modeLabel} rows found to clear.`;
+
+            this.showAlert(summary, totalCleared > 0 ? 'success' : 'info');
+            if (this.clearDataModal) {
+                this.clearDataModal.hide();
+            }
+            this.resetSessionData({ keepFileInput: true });
+        } catch (error) {
+            console.error('PIC clear data failed:', error);
+            this.showAlert(error.message || 'Failed to clear data. Please try again.', 'danger');
+            if (this.clearDataModal) {
+                this.clearDataModal.hide();
+            }
+        } finally {
+            this.isClearingMode = false;
+            this.setClearModeLoading(false);
+            this.updateModeButtons();
+        }
+    }
+
+    setImportButtonState(readyRecords) {
+        const importBtn = this.importButton;
         if (!importBtn) {
             return;
         }
 
-        const canImport = Boolean(this.sessionId)
-            && this.readyRecordCount > 0
-            && this.modeIsSelected()
-            && !this.isClearingMode
-            && !this.isUploading;
-
-        importBtn.disabled = !canImport;
-        importBtn.setAttribute('aria-disabled', String(!canImport));
-        importBtn.dataset.readyCount = this.readyRecordCount.toString();
-        const modeLabel = this.getModeDisplayLabel();
-        if (canImport) {
-            importBtn.title = `Import ${this.readyRecordCount} history records (${modeLabel})`;
-        } else {
-            importBtn.title = 'Upload and validate data to enable the import.';
-        }
+        const readyCount = Number(readyRecords) || 0;
+        importBtn.disabled = !this.sessionId || readyCount === 0;
+        importBtn.dataset.readyCount = readyCount.toString();
+        this.updateElementText('picReadyRecords', readyCount);
+        this.updateModeButtons();
     }
 
     updateFilterButtons() {
         const buttons = {
-            all: document.getElementById('historyShowAllBtn'),
-            issues: document.getElementById('historyShowIssuesBtn'),
-            valid: document.getElementById('historyShowValidBtn')
+            all: document.getElementById('picShowAllBtn'),
+            issues: document.getElementById('picShowIssuesBtn'),
+            valid: document.getElementById('picShowValidBtn')
         };
 
         Object.entries(buttons).forEach(([key, button]) => {
@@ -799,7 +688,7 @@ class FileHistoryImportManager {
     }
 
     handleTabChange(tab) {
-        if (!['records', 'cofo', 'file-number-qc'].includes(tab)) {
+        if (!['records', 'cofo', 'file-numbers', 'file-number-qc'].includes(tab)) {
             return;
         }
 
@@ -812,7 +701,7 @@ class FileHistoryImportManager {
         if (tab === 'file-number-qc') {
             this.renderFileNumberQcTable();
             this.updateShowingInfoForQc(this.countFileNumberIssues());
-            const pagination = document.getElementById('historyPagination');
+            const pagination = document.getElementById('picPagination');
             if (pagination) {
                 pagination.innerHTML = '';
             }
@@ -826,7 +715,15 @@ class FileHistoryImportManager {
         if (this.currentTab === 'file-number-qc') {
             return;
         }
-        const sourceData = this.currentTab === 'records' ? this.propertyRecords : this.cofoRecords;
+
+        let sourceData = [];
+        if (this.currentTab === 'records') {
+            sourceData = this.propertyRecords;
+        } else if (this.currentTab === 'cofo') {
+            sourceData = this.cofoRecords;
+        } else if (this.currentTab === 'file-numbers') {
+            sourceData = this.fileNumberRecords;
+        }
         const decorated = sourceData.map((record, index) => ({ record, index }));
 
         let filtered = decorated;
@@ -851,18 +748,33 @@ class FileHistoryImportManager {
         if (this.currentTab === 'file-number-qc') {
             return;
         }
-        const bodyId = this.currentTab === 'records' ? 'historyRecordsTableBody' : 'historyCofoTableBody';
+
+        let bodyId = 'picRecordsTableBody';
+        if (this.currentTab === 'cofo') {
+            bodyId = 'picCofoTableBody';
+        } else if (this.currentTab === 'file-numbers') {
+            bodyId = 'picFileNumbersTableBody';
+        }
         const tableBody = document.getElementById(bodyId);
         if (!tableBody) {
             return;
         }
 
-        const sourceData = this.currentTab === 'records' ? this.propertyRecords : this.cofoRecords;
-
+        let sourceData = this.propertyRecords;
+        if (this.currentTab === 'cofo') {
+            sourceData = this.cofoRecords;
+        } else if (this.currentTab === 'file-numbers') {
+            sourceData = this.fileNumberRecords;
+        }
         tableBody.innerHTML = '';
 
         if (!this.filteredRows.length) {
-            const columnCount = this.currentTab === 'records' ? 16 : 14;
+            let columnCount = 16;
+            if (this.currentTab === 'cofo') {
+                columnCount = 14;
+            } else if (this.currentTab === 'file-numbers') {
+                columnCount = 11;
+            }
             const message = sourceData.length
                 ? 'No rows match the current filter.'
                 : 'Upload a file to preview records.';
@@ -884,7 +796,9 @@ class FileHistoryImportManager {
             const displayIndex = startIndex + offset + 1;
             const row = this.currentTab === 'records'
                 ? this.createPropertyRecordRow(item, displayIndex)
-                : this.createCofoRow(item, displayIndex);
+                : this.currentTab === 'cofo'
+                    ? this.createCofoRow(item, displayIndex)
+                    : this.createFileNumberRow(item, displayIndex);
             tableBody.appendChild(row);
         });
 
@@ -900,50 +814,45 @@ class FileHistoryImportManager {
         }
 
         const fileNumber = this.sanitizeValue(record?.mlsFNo);
+        const registerSerial = this.sanitizeValue(record?.serialNo);
+        const oldKnNumber = this.sanitizeValue(record?.oldKNNo);
         const transactionType = this.sanitizeValue(record?.transaction_type);
-        const assignor = this.resolvePreferredValue(
-            record?.Assignor,
-            record?.Grantor,
-            record?.grantor_assignor,
-            record?.OriginalHolder
-        );
-        const assignee = this.resolvePreferredValue(
-            record?.Assignee,
-            record?.Grantee,
-            record?.grantee_assignee,
-            record?.CurrentHolder
-        );
-        const propId = this.sanitizeValue(record?.prop_id) || '—';
-        const landUse = this.sanitizeValue(record?.land_use);
+        const grantor = this.sanitizeValue(record?.Grantor);
+        const grantee = this.sanitizeValue(record?.Grantee);
         const location = this.sanitizeValue(record?.location);
-        const transactionDate = this.resolvePreferredValue(record?.transaction_date, record?.transaction_date_raw);
-        const serialNo = this.sanitizeValue(record?.serialNo);
+        const propId = this.sanitizeValue(record?.prop_id);
+        const assignmentDate = this.resolvePreferredValue(
+            record?.assignment_date,
+            record?.assignment_date_raw,
+            record?.transaction_date,
+            record?.transaction_date_raw
+        );
         const pageNo = this.sanitizeValue(record?.pageNo);
         const volumeNo = this.sanitizeValue(record?.volumeNo);
-        const regDate = this.resolvePreferredValue(record?.reg_date, record?.reg_date_raw, record?.date_created);
-        const createdBy = this.resolvePreferredValue(record?.created_by, record?.CreatedBy);
-        const statusBadge = this.buildStatusBadge(record?.hasIssues);
+        const comments = this.sanitizeValue(record?.comments);
+        const remarks = this.sanitizeValue(record?.remarks);
+    const statusBadge = this.buildStatusBadge(record);
 
         const columnConfigs = [
             { kind: 'text', value: displayIndex.toString() },
             { kind: 'editable', field: 'mlsFNo', value: fileNumber },
-            { kind: 'text', value: propId },
+            { kind: 'prop-id', value: propId, source: record?.prop_id_source },
             { kind: 'editable', field: 'transaction_type', value: transactionType },
-            { kind: 'editable', field: 'Assignor', value: assignor },
-            { kind: 'editable', field: 'Assignee', value: assignee },
-            { kind: 'editable', field: 'land_use', value: landUse },
+            { kind: 'editable', field: 'Grantor', value: grantor },
+            { kind: 'editable', field: 'Grantee', value: grantee },
             { kind: 'editable', field: 'location', value: location },
-            { kind: 'editable', field: 'transaction_date', value: transactionDate },
-            { kind: 'editable', field: 'serialNo', value: serialNo },
+            { kind: 'editable', field: 'assignment_date', value: assignmentDate },
+            { kind: 'editable', field: 'comments', value: comments },
+            { kind: 'editable', field: 'oldKNNo', value: oldKnNumber },
+            { kind: 'editable', field: 'serialNo', value: registerSerial },
             { kind: 'editable', field: 'pageNo', value: pageNo },
             { kind: 'editable', field: 'volumeNo', value: volumeNo },
-            { kind: 'editable', field: 'reg_date', value: regDate },
-            { kind: 'editable', field: 'created_by', value: createdBy },
+            { kind: 'editable', field: 'remarks', value: remarks },
             { kind: 'status', html: statusBadge },
             { kind: 'actions', typeKey: 'records', rowIndex: index }
         ];
 
-        columnConfigs.forEach((config) => {
+    columnConfigs.forEach((config) => {
             const td = document.createElement('td');
             switch (config.kind) {
                 case 'text':
@@ -952,6 +861,10 @@ class FileHistoryImportManager {
                 case 'editable':
                     td.textContent = config.value ?? '';
                     this.attachInlineEditing(td, 'records', index, config.field);
+                    break;
+                case 'prop-id':
+                    td.classList.add('text-nowrap');
+                    this.renderPropIdCell(td, config.value, config.source);
                     break;
                 case 'status':
                     td.innerHTML = config.html ?? '';
@@ -978,28 +891,28 @@ class FileHistoryImportManager {
         }
 
         const fileNumber = this.sanitizeValue(record?.mlsFNo);
-    const transactionType = this.sanitizeValue(record?.transaction_type);
-        const assignor = this.resolvePreferredValue(record?.Assignor, record?.Grantor);
-        const assignee = this.resolvePreferredValue(record?.Assignee, record?.Grantee);
-    const propId = this.sanitizeValue(record?.prop_id) || '—';
+        const transactionType = this.sanitizeValue(record?.transaction_type);
+        const grantor = this.sanitizeValue(record?.Grantor);
+        const grantee = this.sanitizeValue(record?.Grantee);
         const transactionDate = this.resolvePreferredValue(record?.transaction_date, record?.transaction_date_raw);
-        const transactionTime = this.resolvePreferredValue(record?.transaction_time, record?.transaction_time_raw);
-        const serialNo = this.sanitizeValue(record?.serialNo);
+        const registerSerial = this.sanitizeValue(record?.serialNo);
+        const oldKnNumber = this.sanitizeValue(record?.oldKNNo);
         const pageNo = this.sanitizeValue(record?.pageNo);
         const volumeNo = this.sanitizeValue(record?.volumeNo);
         const regNo = this.sanitizeValue(record?.regNo);
-        const statusBadge = this.buildStatusBadge(record?.hasIssues);
+    const statusBadge = this.buildStatusBadge(record);
+        const propId = this.sanitizeValue(record?.prop_id);
 
         const columnConfigs = [
             { kind: 'text', value: displayIndex.toString() },
             { kind: 'editable', field: 'mlsFNo', value: fileNumber },
-            { kind: 'text', value: propId },
+            { kind: 'editable', field: 'oldKNNo', value: oldKnNumber },
+            { kind: 'prop-id', value: propId, source: record?.prop_id_source },
             { kind: 'editable', field: 'transaction_type', value: transactionType },
-            { kind: 'editable', field: 'Assignor', value: assignor },
-            { kind: 'editable', field: 'Assignee', value: assignee },
+            { kind: 'editable', field: 'Grantor', value: grantor },
+            { kind: 'editable', field: 'Grantee', value: grantee },
             { kind: 'editable', field: 'transaction_date', value: transactionDate },
-            { kind: 'editable', field: 'transaction_time', value: transactionTime },
-            { kind: 'editable', field: 'serialNo', value: serialNo },
+            { kind: 'editable', field: 'serialNo', value: registerSerial },
             { kind: 'editable', field: 'pageNo', value: pageNo },
             { kind: 'editable', field: 'volumeNo', value: volumeNo },
             { kind: 'editable', field: 'regNo', value: regNo },
@@ -1016,6 +929,69 @@ class FileHistoryImportManager {
                 case 'editable':
                     td.textContent = config.value ?? '';
                     this.attachInlineEditing(td, 'cofo', index, config.field);
+                    break;
+                case 'prop-id':
+                    td.classList.add('text-nowrap');
+                    this.renderPropIdCell(td, config.value, config.source);
+                    break;
+                case 'status':
+                    td.innerHTML = config.html ?? '';
+                    break;
+                case 'actions':
+                    td.classList.add('text-center');
+                    this.appendDeleteButton(td, config.typeKey, config.rowIndex);
+                    break;
+                default:
+                    td.textContent = config.value ?? '';
+            }
+            tr.appendChild(td);
+        });
+
+        return tr;
+    }
+
+    createFileNumberRow(item, displayIndex) {
+        const { record, index } = item;
+        const tr = document.createElement('tr');
+
+        if (record?.hasIssues) {
+            tr.classList.add('table-warning');
+        }
+
+        const fileNumber = this.sanitizeValue(record?.mlsfNo || record?.mlsFNo);
+        const trackingId = this.sanitizeValue(record?.tracking_id);
+        const fileName = this.sanitizeValue(record?.FileName);
+        const location = this.sanitizeValue(record?.location);
+        const type = this.sanitizeValue(record?.type);
+        const source = this.sanitizeValue(record?.SOURCE || record?.source);
+        const plotNo = this.sanitizeValue(record?.plot_no);
+        const propId = this.sanitizeValue(record?.prop_id);
+        const createdBy = this.sanitizeValue(record?.created_by || record?.CreatedBy);
+        const statusBadge = this.buildStatusBadge(record);
+
+        const columnConfigs = [
+            { kind: 'text', value: displayIndex.toString() },
+            { kind: 'text', value: fileNumber },
+            { kind: 'text', value: trackingId },
+            { kind: 'text', value: fileName },
+            { kind: 'text', value: location },
+            { kind: 'text', value: type },
+            { kind: 'text', value: source },
+            { kind: 'text', value: plotNo },
+            { kind: 'text', value: createdBy },
+            { kind: 'status', html: statusBadge },
+            { kind: 'actions', typeKey: 'file-numbers', rowIndex: index }
+        ];
+
+        columnConfigs.forEach((config) => {
+            const td = document.createElement('td');
+            switch (config.kind) {
+                case 'text':
+                    td.textContent = config.value ?? '';
+                    break;
+                case 'prop-id':
+                    td.classList.add('text-nowrap');
+                    this.renderPropIdCell(td, config.value, config.source);
                     break;
                 case 'status':
                     td.innerHTML = config.html ?? '';
@@ -1038,9 +1014,14 @@ class FileHistoryImportManager {
             return;
         }
 
+        if (recordType === 'file-numbers') {
+            cell.innerHTML = '<span class="text-muted">—</span>';
+            return;
+        }
+
         const button = document.createElement('button');
         button.type = 'button';
-        button.className = 'btn btn-sm btn-outline-danger history-delete-btn';
+        button.className = 'btn btn-sm btn-outline-danger';
         button.innerHTML = '<i class="fas fa-trash-alt me-1"></i>Delete';
         button.addEventListener('click', (event) => {
             event.preventDefault();
@@ -1179,14 +1160,14 @@ class FileHistoryImportManager {
         }
 
         const payload = {
-            record_index: rowIndex,
+            index: rowIndex,
             record_type: recordType,
             field,
             value
         };
 
         try {
-            const response = await fetch(`/api/file-history/update/${this.sessionId}`, {
+            const response = await fetch(`/api/pic/update/${this.sessionId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1207,7 +1188,7 @@ class FileHistoryImportManager {
 
             return true;
         } catch (error) {
-            console.error('File history update failed:', error);
+            console.error('PIC update failed:', error);
             this.showAlert(error.message || 'Update failed. Changes reverted.', 'danger');
             if (typeof options.onError === 'function') {
                 options.onError(error);
@@ -1238,12 +1219,12 @@ class FileHistoryImportManager {
 
     async deleteRecord(recordType, rowIndex) {
         const payload = {
-            record_index: rowIndex,
+            index: rowIndex,
             record_type: recordType
         };
 
         try {
-            const response = await fetch(`/api/file-history/delete/${this.sessionId}`, {
+            const response = await fetch(`/api/pic/delete/${this.sessionId}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -1259,7 +1240,7 @@ class FileHistoryImportManager {
             this.applySessionUpdate(result);
             this.showAlert('Row removed from preview.', 'success');
         } catch (error) {
-            console.error('File history delete failed:', error);
+            console.error('PIC delete failed:', error);
             this.showAlert(error.message || 'Unable to remove row. Please try again.', 'danger');
         }
     }
@@ -1270,7 +1251,7 @@ class FileHistoryImportManager {
         }
 
         if (result.test_control) {
-            this.setTestControlMode(result.test_control);
+            this.syncTestControl(result.test_control);
         }
 
         if (Array.isArray(result.property_records)) {
@@ -1279,9 +1260,11 @@ class FileHistoryImportManager {
         if (Array.isArray(result.cofo_records)) {
             this.cofoRecords = result.cofo_records;
         }
+        if (Array.isArray(result.file_number_records)) {
+            this.fileNumberRecords = result.file_number_records;
+        }
 
         this.qcIssues = result.issues || {};
-
         this.updateCounts();
         this.updateStatistics(result);
         this.setImportButtonState(result.ready_records);
@@ -1317,7 +1300,7 @@ class FileHistoryImportManager {
 
     getAutoFixableFileNumberIssues(issues) {
         const source = Array.isArray(issues) ? issues : this.collectFileNumberIssues();
-        return source.filter((item) => item && item.auto_fixable && item.suggested_fix && Number.isInteger(item.record_index));
+        return source.filter((item) => item && Number.isInteger(item.record_index) && item.suggested_fix);
     }
 
     buildFixAllLabel(count) {
@@ -1355,7 +1338,7 @@ class FileHistoryImportManager {
             return;
         }
 
-        this.isApplyingFixAll = Boolean(isLoading);
+        this.isApplyingFixAll = isLoading;
 
         if (isLoading) {
             if (this.fixAllButtonWrapper) {
@@ -1428,9 +1411,9 @@ class FileHistoryImportManager {
     }
 
     renderFileNumberQcTable() {
-        const wrapper = document.getElementById('historyFileNumberQcWrapper');
-        const tbody = document.getElementById('historyFileNumberQcBody');
-        const emptyState = document.getElementById('historyFileNumberQcEmpty');
+        const wrapper = document.getElementById('picFileNumberQcWrapper');
+        const tbody = document.getElementById('picFileNumberQcBody');
+        const emptyState = document.getElementById('picFileNumberQcEmpty');
 
         if (!wrapper || !tbody || !emptyState) {
             return;
@@ -1462,18 +1445,17 @@ class FileHistoryImportManager {
 
         const categoryConfig = this.getCategoryConfig(issue.category);
         const issueLabel = categoryConfig?.label || this.formatCategoryName(issue.category);
-        const description = this.sanitizeValue(issue.description || issue.message || issue.issue_description);
-        const suggestedFix = this.sanitizeValue(issue.suggested_fix);
-        const severity = issue.severity || 'Medium';
+        const description = issue.description || issue.message || issue.issue_description || '';
+        const suggestedFix = issue.suggested_fix || '';
+        const severity = issue.severity || categoryConfig?.severity || 'Medium';
         const fileNumber = this.sanitizeValue(issue.file_number || issue.fileNumber || '');
-        const autoFixable = Boolean(issue.auto_fixable && suggestedFix);
 
         const cells = [
             { kind: 'text', value: displayIndex.toString() },
             { kind: 'text', value: issueLabel },
             { kind: 'code', value: fileNumber },
             { kind: 'text', value: description },
-            { kind: 'fix', value: suggestedFix, autoFixable },
+            { kind: 'code', value: suggestedFix },
             { kind: 'badge', value: severity },
             { kind: 'actions', value: issue }
         ];
@@ -1484,25 +1466,12 @@ class FileHistoryImportManager {
                 case 'code':
                     td.innerHTML = config.value ? `<code>${this.escapeHtml(config.value)}</code>` : '<span class="text-muted">—</span>';
                     break;
-                case 'fix': {
-                    if (config.value) {
-                        const fixHtml = `<code>${this.escapeHtml(config.value)}</code>`;
-                        td.innerHTML = config.autoFixable
-                            ? `${fixHtml}<div class="mt-1">${this.formatAutoFixBadge()}</div>`
-                            : fixHtml;
-                    } else {
-                        td.innerHTML = config.autoFixable
-                            ? `<div>${this.formatAutoFixBadge()}</div>`
-                            : '<span class="text-muted">—</span>';
-                    }
-                    break;
-                }
                 case 'badge':
                     td.innerHTML = this.formatSeverityBadge(config.value);
                     break;
                 case 'actions': {
                     td.classList.add('text-center');
-                    if (autoFixable && Number.isInteger(config.value?.record_index)) {
+                    if (config.value?.suggested_fix && Number.isInteger(config.value.record_index)) {
                         const applyBtn = document.createElement('button');
                         applyBtn.type = 'button';
                         applyBtn.className = 'btn btn-sm btn-outline-primary';
@@ -1535,10 +1504,6 @@ class FileHistoryImportManager {
         return `<span class="badge bg-${theme}">${this.escapeHtml(label)}</span>`;
     }
 
-    formatAutoFixBadge() {
-        return '<span class="badge bg-primary">Auto-fix</span>';
-    }
-
     async applyFileNumberFix(issue) {
         if (!issue || typeof issue.record_index !== 'number') {
             return;
@@ -1550,22 +1515,52 @@ class FileHistoryImportManager {
         }
 
         await this.updateField('records', issue.record_index, 'mlsFNo', fix, {
-            successMessage: `File number updated to ${this.escapeHtml(fix)}`,
-            onError: () => {
-                // No-op; updateField already shows alert
-            }
+            successMessage: `File number updated to ${this.escapeHtml(fix)}`
         });
     }
 
-    buildStatusBadge(hasIssues) {
-        if (hasIssues) {
+    buildStatusBadge(record) {
+        if (!record) {
+            return '';
+        }
+        if (record.hasIssues) {
             return '<span class="badge bg-warning text-dark">Needs review</span>';
         }
+
         return '<span class="badge bg-success">Ready</span>';
     }
 
+    renderPropIdCell(cell, value, source) {
+        if (!cell) {
+            return;
+        }
+
+        const displayValue = this.formatPropIdValue(value);
+        if (!displayValue) {
+            cell.innerHTML = '<span class="text-muted">—</span>';
+            cell.removeAttribute('title');
+            return;
+        }
+
+        cell.textContent = displayValue;
+        const sourceLabel = this.sanitizeValue(source);
+        if (sourceLabel) {
+            cell.title = sourceLabel;
+        } else {
+            cell.removeAttribute('title');
+        }
+    }
+
+    formatPropIdValue(value) {
+        const sanitized = this.sanitizeValue(value);
+        if (!sanitized) {
+            return '';
+        }
+        return sanitized.replace(/^#+/, '').trim();
+    }
+
     renderPagination() {
-        const pagination = document.getElementById('historyPagination');
+        const pagination = document.getElementById('picPagination');
         if (!pagination) {
             return;
         }
@@ -1656,17 +1651,17 @@ class FileHistoryImportManager {
             ? 0
             : Math.min(this.currentPage * this.itemsPerPage, totalCount);
 
-        this.updateElementText('historyShowingStart', start);
-        this.updateElementText('historyShowingEnd', end);
-        this.updateElementText('historyShowingTotal', totalCount);
+        this.updateElementText('picShowingStart', start);
+        this.updateElementText('picShowingEnd', end);
+        this.updateElementText('picShowingTotal', totalCount);
     }
 
     updateShowingInfoForQc(total) {
         const count = Number(total) || 0;
         const start = count === 0 ? 0 : 1;
-        this.updateElementText('historyShowingStart', start);
-        this.updateElementText('historyShowingEnd', count);
-        this.updateElementText('historyShowingTotal', count);
+        this.updateElementText('picShowingStart', start);
+        this.updateElementText('picShowingEnd', count);
+        this.updateElementText('picShowingTotal', count);
     }
 
     countFileNumberIssues() {
@@ -1680,7 +1675,7 @@ class FileHistoryImportManager {
     }
 
     updateFileNumberIssueCount() {
-        const issueCountElement = document.getElementById('historyFileNumberIssueCount');
+        const issueCountElement = document.getElementById('picFileNumberIssueCount');
         if (!issueCountElement) {
             return;
         }
@@ -1689,11 +1684,11 @@ class FileHistoryImportManager {
     }
 
     showValidationIssues(issues) {
-        const panel = document.getElementById('historyValidationPanel');
-        const summaryContainer = document.getElementById('historyQcSummaryContainer');
-        const table = document.getElementById('historyQcIssuesTable');
-        const tbody = document.getElementById('historyQcIssuesBody');
-        const emptyState = document.getElementById('historyQcEmptyState');
+        const panel = document.getElementById('picValidationPanel');
+        const summaryContainer = document.getElementById('picQcSummaryContainer');
+        const table = document.getElementById('picQcIssuesTable');
+        const tbody = document.getElementById('picQcIssuesBody');
+        const emptyState = document.getElementById('picQcEmptyState');
 
         if (!panel || !summaryContainer || !table || !tbody || !emptyState) {
             return;
@@ -1715,9 +1710,7 @@ class FileHistoryImportManager {
         const detailRows = this.buildIssueDetailRows(normalizedIssues);
         this.renderIssueTable(table, tbody, detailRows);
 
-        if (emptyState) {
-            emptyState.style.display = detailRows.length === 0 ? 'block' : 'none';
-        }
+        emptyState.style.display = detailRows.length === 0 ? 'block' : 'none';
     }
 
     normalizeIssues(rawIssues = {}) {
@@ -1747,40 +1740,20 @@ class FileHistoryImportManager {
 
         this.categoryOrder.forEach((key) => {
             const config = this.getCategoryConfig(key);
-            const toneClasses = FILE_HISTORY_QC_TONE_CLASSMAP[config.tone] || FILE_HISTORY_QC_TONE_CLASSMAP.secondary;
+            const toneClasses = PIC_QC_TONE_CLASSMAP[config.tone] || PIC_QC_TONE_CLASSMAP.secondary;
             const borderClass = toneClasses?.border || 'border-secondary';
             const textClass = toneClasses?.text || 'text-secondary';
             const count = this.getCategoryCount(key, issueMap);
-            const iconClass = config.icon || 'fa-circle-exclamation';
-            const issueWord = count === 1 ? 'issue' : 'issues';
-            const severityBadge = this.formatSeverityBadge(config.severity || 'Medium');
-            const description = config.description
-                ? `<p class="text-muted small mb-2">${this.escapeHtml(config.description)}</p>`
-                : '';
 
             const col = document.createElement('div');
             col.className = 'col-sm-6 col-lg-3';
 
             const card = document.createElement('div');
             card.className = `card shadow-sm ${borderClass}`;
-            if (count === 0) {
-                card.classList.add('opacity-50');
-            }
-
             card.innerHTML = `
-                <div class="card-body py-3">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <div class="d-flex align-items-center gap-2">
-                            <i class="fas ${iconClass} ${textClass}"></i>
-                            <span class="${textClass} fw-semibold">${this.escapeHtml(config.label)}</span>
-                        </div>
-                        ${severityBadge}
-                    </div>
-                    ${description}
-                    <div class="d-flex align-items-baseline gap-2">
-                        <span class="fw-bold fs-4">${count}</span>
-                        <span class="text-muted small">${issueWord}</span>
-                    </div>
+                <div class="card-body py-2">
+                    <h6 class="mb-1 ${textClass}">${this.escapeHtml(config.label)}</h6>
+                    <div class="fw-bold fs-5">${count}</div>
                 </div>
             `;
 
@@ -1820,20 +1793,21 @@ class FileHistoryImportManager {
 
             const config = this.getCategoryConfig(key);
             const label = config.label || this.formatCategoryName(key);
+            const severity = config.severity || 'Medium';
 
             items.forEach((item) => {
-                const issueSeverity = item?.severity || config.severity || 'Medium';
-                const suggestedFix = this.sanitizeValue(item?.suggested_fix);
-                const autoFixable = Boolean(item?.auto_fixable && suggestedFix);
+                const notes = item.suggested_fix
+                    ? `Suggested fix: ${item.suggested_fix}`
+                    : item.auto_fixable
+                        ? 'Auto-fixable'
+                        : 'Manual review required';
 
                 rows.push({
-                    category: key,
                     type: label,
                     fileNumber: this.sanitizeValue(item.file_number || item.fileNumber || item.mlsFNo),
                     details: this.composeIssueText(item),
-                    severity: issueSeverity,
-                    suggestedFix,
-                    autoFixable
+                    severity,
+                    notes
                 });
             });
         });
@@ -1853,31 +1827,15 @@ class FileHistoryImportManager {
         }
 
         table.style.display = '';
-        tbody.innerHTML = rows.map((row) => {
-            const fileNumberCell = row.fileNumber
-                ? `<code>${this.escapeHtml(row.fileNumber)}</code>`
-                : '<span class="text-muted">—</span>';
-            const resolutionParts = [];
-            if (row.suggestedFix) {
-                resolutionParts.push(`<code>${this.escapeHtml(row.suggestedFix)}</code>`);
-            }
-            if (row.autoFixable) {
-                resolutionParts.push(this.formatAutoFixBadge());
-            } else {
-                resolutionParts.push('<span class="text-muted small">Manual review</span>');
-            }
-            const resolutionCell = resolutionParts.join('<br>');
-
-            return `
-                <tr data-qc-category="${this.escapeHtml(row.category)}">
-                    <td>${this.formatTableCell(row.type)}</td>
-                    <td>${fileNumberCell}</td>
-                    <td>${this.formatTableCell(row.details)}</td>
-                    <td>${this.formatSeverityBadge(row.severity)}</td>
-                    <td>${resolutionCell}</td>
-                </tr>
-            `;
-        }).join('');
+        tbody.innerHTML = rows.map((row) => `
+            <tr>
+                <td>${this.formatTableCell(row.type)}</td>
+                <td>${this.formatTableCell(row.fileNumber)}</td>
+                <td>${this.formatTableCell(row.details)}</td>
+                <td>${this.formatTableCell(row.severity)}</td>
+                <td>${this.formatTableCell(row.notes)}</td>
+            </tr>
+        `).join('');
     }
 
     formatTableCell(value, placeholder = '—') {
@@ -1966,12 +1924,12 @@ class FileHistoryImportManager {
     }
 
     showAlert(message, type = 'info') {
-        const container = document.getElementById('historyAlertContainer');
+        const container = document.getElementById('picAlertContainer');
         if (!container) {
             return;
         }
 
-        const alertId = `history-alert-${Date.now()}`;
+        const alertId = `pic-alert-${Date.now()}`;
         const iconMap = {
             success: 'fa-check-circle',
             danger: 'fa-times-circle',
@@ -2002,7 +1960,9 @@ class FileHistoryImportManager {
             return;
         }
 
-        if (!this.ensureModeSelected()) {
+        if (!this.modeIsSelected()) {
+            this.showAlert('Select a Data Mode before importing.', 'warning');
+            this.testControlSelect?.focus();
             return;
         }
 
@@ -2012,20 +1972,16 @@ class FileHistoryImportManager {
             return;
         }
 
-        if (!window.confirm(`Import ${readyCount} property record${readyCount === 1 ? '' : 's'} into the database?`)) {
+        const confirmationPrompt = `Import ${readyCount} property record${readyCount === 1 ? '' : 's'} in ${this.testControlMode} mode?`;
+        if (!window.confirm(confirmationPrompt)) {
             return;
         }
 
-        this.disableUpload(true);
-        this.isUploading = true;
-        this.updateModeControls();
-        this.updateUploadButtonState();
-        this.setImportButtonState(this.readyRecordCount);
         this.showLoadingModal();
         this.updateProgress(25, 'Importing records…');
 
         try {
-            const response = await fetch(`/api/import-file-history/${this.sessionId}`, {
+            const response = await fetch(`/api/import-pic/${this.sessionId}`, {
                 method: 'POST'
             });
 
@@ -2034,33 +1990,29 @@ class FileHistoryImportManager {
             }
 
             const result = await response.json();
-            if (result?.test_control) {
-                this.setTestControlMode(result.test_control);
+            if (result.test_control) {
+                this.syncTestControl(result.test_control);
             }
             this.showAlert(
-                `Import completed. ${result.imported_count || 0} record${result.imported_count === 1 ? '' : 's'} saved.`,
+                `Import completed in ${this.testControlMode} mode. ${result.imported_count || 0} record${result.imported_count === 1 ? '' : 's'} processed.`,
                 'success'
             );
 
             this.resetSessionData();
         } catch (error) {
-            console.error('File history import failed:', error);
+            console.error('PIC import failed:', error);
             this.showAlert(error.message || 'Import failed. Please try again.', 'danger');
         } finally {
             this.hideLoadingModal();
             this.showUploadProgress(false);
-            this.isUploading = false;
             this.disableUpload(false);
-            this.updateModeControls();
-            this.updateUploadButtonState();
-            this.setImportButtonState(this.readyRecordCount);
         }
     }
 }
 
-let fileHistoryManager;
+let propertyIndexCardManager;
 
 document.addEventListener('DOMContentLoaded', () => {
-    fileHistoryManager = new FileHistoryImportManager();
-    window.fileHistoryManager = fileHistoryManager;
+    propertyIndexCardManager = new PropertyIndexCardImportManager();
+    window.propertyIndexCardManager = propertyIndexCardManager;
 });

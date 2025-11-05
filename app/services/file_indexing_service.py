@@ -5,18 +5,22 @@ importable by routers and other modules.
 """
 from __future__ import annotations
 
+import logging
 import numbers
 import re
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import func, text
+from sqlalchemy.sql import bindparam
 
 from app.models.database import CofO, FileIndexing, FileNumber, Grouping, SessionLocal
+
 TRACKING_ID_PREFIX = 'TRK'
-DEFAULT_CREATED_BY = 'MDC Import'
+
+logger = logging.getLogger(__name__)
 
 
 def _format_value(value, numeric: bool = False):
@@ -121,6 +125,162 @@ def _normalize_temp_suffix_format(value: str) -> str:
     return trimmed
 
 
+def _remove_file_number_suffixes(value: Any) -> Optional[str]:
+    """Strip trailing suffixes like 'AND EXTENSION' or '(TEMP)' for canonical comparisons."""
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # Canonicalize TEMP suffix variations before removal.
+    text = _normalize_temp_suffix_format(text)
+
+    suffix_patterns = (
+        r'\s+(?:AND\s+EXTENSION)\s*$',
+        r'\s*&\s*EXTENSION\s*$',
+        r'\s*\(\s*TEMP\s*\)\s*$',
+    )
+
+    while True:
+        updated = text
+        for pattern in suffix_patterns:
+            updated = re.sub(pattern, '', updated, flags=re.IGNORECASE).strip()
+        if updated == text:
+            break
+        text = updated
+
+    return text if text else None
+
+
+def _normalize_file_number_for_match(value: Any) -> Optional[str]:
+    normalized = _normalize_string(value)
+    if not normalized:
+        return None
+
+    normalized = _normalize_temp_suffix_format(normalized)
+    normalized = _remove_file_number_suffixes(normalized) or normalized
+    normalized = normalized.upper()
+    normalized = re.sub(r'\s+', '', normalized)
+    normalized = normalized.replace('-', '')
+    return normalized if normalized else None
+
+
+def _normalize_cofo_date(value: Any) -> Optional[str]:
+    normalized = _normalize_string(value)
+    if not normalized:
+        return None
+
+    normalized = normalized.replace('/', '-').replace('.', '-').replace('\\', '-').strip()
+
+    for day_first in (True, False):
+        parsed = pd.to_datetime(normalized, errors='coerce', dayfirst=day_first)
+        if not pd.isna(parsed):
+            return parsed.strftime('%d-%m-%Y')
+
+    logger.warning("Unable to parse cofo_date '%s'", normalized)
+    return normalized
+
+
+def _normalize_time_field(value: Any) -> Optional[str]:
+    normalized = _normalize_string(value)
+    if not normalized:
+        return None
+
+    working = normalized.replace('.', ':')
+    working = re.sub(r'\s+', ' ', working).strip().upper()
+
+    am_pm = ''
+    match = re.search(r'(AM|PM)$', working)
+    if match:
+        am_pm = match.group(1)
+        working = working[:match.start()].strip()
+
+    working = working.replace(' ', '')
+
+    if ':' not in working:
+        digits_only = re.sub(r'[^0-9]', '', working)
+        if digits_only.isdigit() and len(digits_only) >= 3:
+            split_index = len(digits_only) - 2
+            working = f"{digits_only[:split_index]}:{digits_only[split_index:]}"
+        else:
+            working = digits_only or working
+
+    segments = [segment for segment in working.split(':') if segment != '']
+    for index, segment in enumerate(segments):
+        if segment.isdigit():
+            segments[index] = segment.zfill(2)
+    working = ':'.join(segments)
+
+    formatted = working
+    if am_pm:
+        formatted = f"{working} {am_pm}"
+
+    validation_formats = [
+        "%I:%M %p",
+        "%H:%M",
+        "%I:%M:%S %p",
+        "%H:%M:%S",
+        "%I %M %p",
+        "%H%M"
+    ]
+
+    for fmt in validation_formats:
+        try:
+            datetime.strptime(formatted, fmt)
+            return formatted
+        except ValueError:
+            continue
+
+    return formatted
+
+
+def _normalize_registry(value: Any) -> Optional[str]:
+    """Normalize registry values so different user inputs map to just the number (1, 2, 3)."""
+    normalized = _normalize_string(value)
+    if not normalized:
+        return None
+
+    candidate = normalized.strip().lower()
+
+    # If it's already just a digit, return it (removing leading zeros)
+    exact_digit = re.fullmatch(r'\d+', candidate)
+    if exact_digit:
+        number = exact_digit.group(0).lstrip('0') or '0'
+        return number
+
+    # Extract number from "registry N" or "reg N" format
+    suffix_match = re.fullmatch(r'(?:registry|reg)\s*(\d+)', candidate)
+    if suffix_match:
+        number = suffix_match.group(1).lstrip('0') or '0'
+        return number
+
+    # If it contains "registry" but doesn't match the pattern above, 
+    # try to extract any trailing number
+    if 'registry' in candidate:
+        number_match = re.search(r'(\d+)$', candidate)
+        if number_match:
+            number = number_match.group(1).lstrip('0') or '0'
+            return number
+
+    return normalized
+
+
+def _standardize_file_number(value: Any) -> Optional[str]:
+    normalized = _normalize_string(value)
+    if not normalized:
+        return None
+    normalized = _normalize_temp_suffix_format(normalized)
+    normalized = _remove_file_number_suffixes(normalized) or normalized
+    return normalized.upper()
+
+
+def _chunk_list(values: List[str], size: int) -> Iterable[List[str]]:
+    for index in range(0, len(values), size):
+        yield values[index:index + size]
+
+
 def _combine_location(district: str, lga: str) -> Optional[str]:
     parts = [_normalize_string(district), _normalize_string(lga)]
     parts = [part for part in parts if part]
@@ -141,7 +301,7 @@ def _has_cofo_payload(record: Dict[str, Any]) -> bool:
     return any(_normalize_string(record.get(field)) for field in cofo_fields)
 
 
-def _build_cofo_record(record: Dict[str, Any]) -> CofO:
+def _build_cofo_record(record: Dict[str, Any], test_control: str) -> CofO:
     location = _combine_location(record.get('district'), record.get('lga'))
     reg_no = _build_reg_no(record)
 
@@ -150,8 +310,8 @@ def _build_cofo_record(record: Dict[str, Any]) -> CofO:
         title_type='COFO',
         transaction_type='Certificate of Occupancy',
         instrument_type='Certificate of Occupancy',
-        transaction_date=_normalize_string(record.get('deeds_date') or record.get('transaction_date')),
-        transaction_time=_normalize_string(record.get('deeds_time') or record.get('transaction_time')),
+    transaction_date=_normalize_string(record.get('deeds_date') or record.get('transaction_date')),
+    transaction_time=_normalize_time_field(record.get('deeds_time') or record.get('transaction_time')),
         serial_no=_normalize_string(record.get('serial_no')),
         page_no=_normalize_string(record.get('page_no')),
         volume_no=_normalize_string(record.get('vol_no')),
@@ -164,8 +324,9 @@ def _build_cofo_record(record: Dict[str, Any]) -> CofO:
         cofo_type='Legacy CofO',
         grantor='Kano State Government',
         grantee=_normalize_string(record.get('file_title')),
-        cofo_date=_normalize_string(record.get('cofo_date')),
-        prop_id=record.get('prop_id')
+        cofo_date=_normalize_cofo_date(record.get('cofo_date')),
+        prop_id=record.get('prop_id'),
+        test_control=test_control
     )
 
 
@@ -189,7 +350,8 @@ def _update_cofo(target: CofO, source: CofO) -> None:
         'grantor',
         'grantee',
         'cofo_date',
-        'prop_id'
+        'prop_id',
+        'test_control'
     ]
 
     for field in fields_to_sync:
@@ -204,34 +366,155 @@ def _generate_tracking_id() -> str:
 
 
 def _grouping_match_info(db, file_number: Optional[str]):
-    if not file_number:
+    canonical_input = _normalize_file_number_for_match(file_number)
+    if not canonical_input:
         return None, 'missing', 'File number is blank'
 
-    grouping_row = db.query(Grouping).filter(Grouping.awaiting_fileno == file_number).first()
+    normalized_input = _normalize_string(file_number)
+    grouping_row = None
+    base_input = _remove_file_number_suffixes(normalized_input) if normalized_input else None
+
+    if normalized_input:
+        grouping_row = db.query(Grouping).filter(Grouping.awaiting_fileno == normalized_input).first()
+
+    if not grouping_row:
+        candidate_value = base_input or normalized_input
+        if candidate_value:
+            grouping_row = db.query(Grouping).filter(Grouping.awaiting_fileno == candidate_value).first()
+
+    if not grouping_row and base_input:
+        grouping_row = (
+            db.query(Grouping)
+            .filter(func.upper(Grouping.awaiting_fileno) == base_input.upper())
+            .first()
+        )
+
+    if not grouping_row and base_input:
+        candidates = (
+            db.query(Grouping)
+            .filter(func.upper(Grouping.awaiting_fileno).like(f"{base_input.upper()}%"))
+            .all()
+        )
+        for candidate in candidates:
+            candidate_canonical = _normalize_file_number_for_match(candidate.awaiting_fileno)
+            if candidate_canonical and candidate_canonical == canonical_input:
+                grouping_row = candidate
+                break
+
+    if not grouping_row:
+        grouping_row = (
+            db.query(Grouping)
+            .filter(
+                func.replace(
+                    func.replace(func.upper(Grouping.awaiting_fileno), '-', ''),
+                    ' ',
+                    ''
+                ) == canonical_input
+            )
+            .first()
+        )
+
     if grouping_row:
         return grouping_row, 'matched', ''
     return None, 'missing', 'Awaiting file number not found in grouping table'
 
-
 def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Assemble grouping preview data while querying the database in batches."""
     summary = {'matched': 0, 'missing': 0, 'skipped': 0}
-    rows = []
+    rows: List[Dict[str, Any]] = []
 
-    with SessionLocal() as db:
-        for record in records:
-            file_number = record.get('file_number')
-            grouping_row, status, reason = _grouping_match_info(db, file_number)
-            summary.setdefault(status, 0)
-            summary[status] += 1
+    standardized_numbers: List[Optional[str]] = []
+    unique_numbers: List[str] = []
+    seen_numbers: Set[str] = set()
 
+    suffix_variants = [
+        '',
+        ' AND EXTENSION',
+        ' (TEMP)',
+        ' TEMP',
+        ' (T)',
+        ' AND EXTENSION (TEMP)',
+        ' AND EXTENSION TEMP',
+        ' AND EXTENSION (T)',
+        ' AND EXTENSION T'
+    ]
+
+    for record in records:
+        standardized = _standardize_file_number(record.get('file_number'))
+        standardized_numbers.append(standardized)
+        if standardized and standardized not in seen_numbers:
+            seen_numbers.add(standardized)
+            unique_numbers.append(standardized)
+
+    grouping_map: Dict[str, Grouping] = {}
+    if unique_numbers:
+        candidate_values: Set[str] = set()
+        for base in unique_numbers:
+            upper_base = base.upper()
+            for suffix in suffix_variants:
+                candidate_values.add(f"{upper_base}{suffix}")
+
+        with SessionLocal() as db:
+            for chunk in _chunk_list(list(candidate_values), 500):
+                if not chunk:
+                    continue
+                matches = (
+                    db.query(Grouping)
+                    .filter(func.upper(Grouping.awaiting_fileno).in_(chunk))
+                    .all()
+                )
+                for grouping_row in matches:
+                    key = _standardize_file_number(grouping_row.awaiting_fileno)
+                    if key and key not in grouping_map:
+                        grouping_map[key] = grouping_row
+
+    for index, record in enumerate(records):
+        raw_number = record.get('file_number')
+        standardized = standardized_numbers[index]
+
+        if not standardized:
+            summary['missing'] += 1
             rows.append({
-                'file_number': file_number,
-                'status': status,
-                'reason': reason,
-                'shelf_rack': grouping_row.shelf_rack if grouping_row else None,
-                'grouping_registry': grouping_row.registry if grouping_row else None,
-                'grouping_number': grouping_row.number if grouping_row else None,
-                'awaiting_fileno': grouping_row.awaiting_fileno if grouping_row else None
+                'file_number': raw_number,
+                'normalized_file_number': None,
+                'status': 'missing',
+                'reason': 'File number is blank',
+                'grouping_registry': None,
+                'grouping_number': None,
+                'awaiting_fileno': None,
+                'group': None,
+                'sys_batch_no': None
+            })
+            continue
+
+        grouping_row = grouping_map.get(standardized)
+        if grouping_row:
+            summary['matched'] += 1
+            rows.append({
+                'file_number': raw_number,
+                'normalized_file_number': standardized,
+                'status': 'matched',
+                'reason': '',
+                'grouping_registry': grouping_row.registry,
+                'grouping_number': grouping_row.number,
+                'awaiting_fileno': grouping_row.awaiting_fileno,
+                'awaiting_normalized': _standardize_file_number(grouping_row.awaiting_fileno),
+                'group': grouping_row.group,
+                'sys_batch_no': grouping_row.sys_batch_no
+            })
+        else:
+            summary['missing'] += 1
+            rows.append({
+                'file_number': raw_number,
+                'normalized_file_number': standardized,
+                'status': 'missing',
+                'reason': 'Awaiting file number not found in grouping table',
+                'grouping_registry': None,
+                'grouping_number': None,
+                'awaiting_fileno': None,
+                'awaiting_normalized': None,
+                'group': None,
+                'sys_batch_no': None
             })
 
     return {
@@ -240,35 +523,165 @@ def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _apply_grouping_updates(db, record: Dict[str, Any], file_number: Optional[str], timestamp: datetime) -> Dict[str, Any]:
+def _bulk_lookup_existing_property_ids(file_numbers: List[Optional[str]]) -> Dict[str, str]:
+    """Resolve existing prop_ids for the provided file numbers using batched lookups."""
+    lookup: Dict[str, str] = {}
+    normalized_unique = [fn for fn in dict.fromkeys(file_numbers or []) if fn]
+    if not normalized_unique:
+        return lookup
+
+    with SessionLocal() as db:
+        for chunk in _chunk_list(normalized_unique, 500):
+            if not chunk:
+                continue
+
+            file_indexing_rows = (
+                db.query(FileIndexing.file_number, FileIndexing.prop_id)
+                .filter(
+                    FileIndexing.file_number.in_(chunk),
+                    FileIndexing.prop_id.isnot(None)
+                )
+                .all()
+            )
+            for file_number, prop_id in file_indexing_rows:
+                key = _standardize_file_number(file_number)
+                value = _normalize_string(prop_id)
+                if not key or not value:
+                    continue
+                lookup.setdefault(key, value)
+
+            cofo_rows = (
+                db.query(CofO.mls_fno, CofO.prop_id)
+                .filter(
+                    CofO.mls_fno.in_(chunk),
+                    CofO.prop_id.isnot(None)
+                )
+                .all()
+            )
+            for file_number, prop_id in cofo_rows:
+                key = _standardize_file_number(file_number)
+                value = _normalize_string(prop_id)
+                if not key or not value:
+                    continue
+                lookup.setdefault(key, value)
+
+            try:
+                property_rows = db.execute(
+                    text(
+                        "SELECT file_number, prop_id "
+                        "FROM property_records "
+                        "WHERE file_number IN :file_numbers "
+                        "AND prop_id IS NOT NULL "
+                        "ORDER BY created_at DESC"
+                    ).bindparams(bindparam("file_numbers", expanding=True)),
+                    {"file_numbers": chunk}
+                )
+                for file_number, prop_id in property_rows:
+                    key = _standardize_file_number(file_number)
+                    value = _normalize_string(prop_id)
+                    if not key or not value:
+                        continue
+                    lookup.setdefault(key, value)
+            except Exception:
+                pass
+
+            try:
+                registered_rows = db.execute(
+                    text(
+                        "SELECT MLSFileNo, prop_id "
+                        "FROM registered_instruments "
+                        "WHERE MLSFileNo IN :file_numbers "
+                        "AND prop_id IS NOT NULL "
+                        "ORDER BY created_at DESC"
+                    ).bindparams(bindparam("file_numbers", expanding=True)),
+                    {"file_numbers": chunk}
+                )
+                for file_number, prop_id in registered_rows:
+                    key = _standardize_file_number(file_number)
+                    value = _normalize_string(prop_id)
+                    if not key or not value:
+                        continue
+                    lookup.setdefault(key, value)
+            except Exception:
+                pass
+
+    return lookup
+
+
+def _apply_grouping_updates(
+    db,
+    record: Dict[str, Any],
+    file_number: Optional[str],
+    timestamp: datetime,
+    test_control: str = 'PRODUCTION'
+) -> Dict[str, Any]:
     shelf_location = record.get('shelf_location')
     grouping_row, status, reason = _grouping_match_info(db, file_number)
+
+    incoming_file_number = record.get('file_number', file_number)
+    cleaned_file_number = _remove_file_number_suffixes(incoming_file_number)
+    grouping_storage_value = (cleaned_file_number or incoming_file_number or '').upper()
 
     result = {
         'status': status,
         'reason': reason,
-        'shelf_location': shelf_location
+        'shelf_location': shelf_location,
+        'group': None,
+        'sys_batch_no': None,
+        'tracking_id': record.get('tracking_id'),
+        'grouping_record': grouping_row
     }
 
     if status != 'matched' or not grouping_row:
         return result
 
-    grouping_row.mls_fileno = file_number
-    grouping_row.mapping = 1
-    grouping_row.date_index = timestamp
-    grouping_row.indexed_by = DEFAULT_CREATED_BY
+    canonical_input = _normalize_file_number_for_match(file_number)
+    canonical_awaiting = _normalize_file_number_for_match(grouping_row.awaiting_fileno)
 
-    batch_no = record.get('batch_no')
-    if batch_no:
-        grouping_row.mdc_batch_no = batch_no
+    if canonical_input and canonical_awaiting and canonical_input == canonical_awaiting:
+        # Update grouping table
+        grouping_row.indexing_mls_fileno = grouping_storage_value
+        grouping_row.indexing_mapping = 1  # Set mapping to 1 when exact match
+        grouping_row.date_index = timestamp
 
-    registry = record.get('registry')
-    if registry:
-        grouping_row.registry = registry
+        created_by_source = _normalize_string(record.get('created_by'))
+        if created_by_source:
+            grouping_row.indexed_by = created_by_source
 
-    resolved_shelf = grouping_row.shelf_rack or shelf_location
-    result['shelf_location'] = resolved_shelf
-    result['reason'] = ''
+        # Copy batch_no from indexing record to mdc_batch_no in grouping
+        batch_no = record.get('batch_no')
+        if batch_no:
+            # Convert to string for mdc_batch_no (assuming it's string field in grouping table)
+            grouping_row.mdc_batch_no = str(batch_no)
+
+        # Update registry if available
+        registry = _normalize_registry(record.get('registry'))
+        if registry:
+            grouping_row.registry = registry
+        if test_control:
+            grouping_row.test_control = test_control
+
+        # Copy group field from grouping to result (for file indexing)
+        if grouping_row.group:
+            result['group'] = grouping_row.group
+
+        # Copy sys_batch_no from grouping to result (for file indexing)  
+        if grouping_row.sys_batch_no:
+            result['sys_batch_no'] = grouping_row.sys_batch_no
+
+        # Adopt tracking id from grouping when available; otherwise cascade from record
+        if grouping_row.tracking_id:
+            result['tracking_id'] = grouping_row.tracking_id
+        elif record.get('tracking_id'):
+            grouping_row.tracking_id = record['tracking_id']
+            result['tracking_id'] = record['tracking_id']
+
+        result['shelf_location'] = shelf_location
+        result['reason'] = ''
+    else:
+        # No exact match, don't update mapping
+        result['reason'] = f'File number {file_number} does not exactly match awaiting_fileno {grouping_row.awaiting_fileno}'
+
     return result
 
 
@@ -278,7 +691,8 @@ def _upsert_file_number(
     record: Dict[str, Any],
     tracking_id: str,
     import_filename: str,
-    timestamp: datetime
+    timestamp: datetime,
+    test_control: str = 'PRODUCTION'
 ) -> None:
     location = _combine_location(record.get('district'), record.get('lga')) or _normalize_string(record.get('location'))
     plot_no = _normalize_string(record.get('plot_number'))
@@ -299,21 +713,33 @@ def _upsert_file_number(
         file_number_entry.type = 'MlsFileNO'
         file_number_entry.source = 'Indexing'
         file_number_entry.updated_at = timestamp
-        file_number_entry.updated_by = DEFAULT_CREATED_BY
-        if not file_number_entry.created_by:
-            file_number_entry.created_by = DEFAULT_CREATED_BY
+        created_by_source = _normalize_string(record.get('created_by'))
+        if created_by_source:
+            file_number_entry.updated_by = created_by_source
+            if not file_number_entry.created_by:
+                file_number_entry.created_by = created_by_source
+        elif not created_by_source and not record.get('_created_by_warning_emitted'):
+            logger.warning("Created By missing for file number %s; keeping existing user metadata", file_number)
+            record['_created_by_warning_emitted'] = True
+        file_number_entry.test_control = test_control
     else:
+        created_by_source = _normalize_string(record.get('created_by'))
+        if not created_by_source and not record.get('_created_by_warning_emitted'):
+            logger.warning("Created By missing for file number %s; inserting record without user metadata", file_number)
+            record['_created_by_warning_emitted'] = True
         file_number_entry = FileNumber(
             mlsf_no=file_number,
             file_name=file_title or import_filename or file_number,
             created_at=timestamp,
             location=location,
-            created_by=DEFAULT_CREATED_BY,
+            created_by=created_by_source,
             type='MlsFileNO',
             source='Indexing',
             plot_no=plot_no,
             tp_no=tp_no,
-            tracking_id=tracking_id
+            tracking_id=tracking_id,
+            updated_by=created_by_source,
+            test_control=test_control
         )
         db.add(file_number_entry)
 
@@ -323,7 +749,7 @@ def process_file_indexing_data(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [col.strip() for col in df.columns]
     normalized_columns = {col.strip().lower(): col for col in df.columns}
-    numeric_like_fields = {'registry', 'batch_no', 'lpkn_no', 'serial_no', 'page_no', 'vol_no'}
+    numeric_like_fields = {'registry', 'batch_no', 'lpkn_no', 'serial_no', 'page_no', 'vol_no', 'created_by'}
 
     field_mappings = {
         'registry': ['Registry'],
@@ -337,7 +763,10 @@ def process_file_indexing_data(df: pd.DataFrame) -> pd.DataFrame:
         'district': ['District'],
         'lga': ['LGA'],
         'location': ['Location'],
-        'shelf_location': ['Shelf Location', 'ShelfLocation'],
+    'shelf_location': ['Shelf Location', 'ShelfLocation'],
+    'created_by': ['Created By', 'CreatedBy'],
+        'group': ['Group'],
+        'sys_batch_no': ['Sys Batch No', 'SysBatchNo', 'System Batch No'],
         'cofo_date': ['CoFO Date', 'COFO Date', 'Cofo Date'],
         'serial_no': ['Serial No', 'SerialNo', 'Serial Number'],
         'page_no': ['Page No', 'PageNo', 'Page Number'],
@@ -368,6 +797,9 @@ def process_file_indexing_data(df: pd.DataFrame) -> pd.DataFrame:
         if standardized_df[col].dtype == 'object':
             standardized_df[col] = standardized_df[col].astype(str).str.strip()
 
+    if 'registry' in standardized_df.columns:
+        standardized_df['registry'] = standardized_df['registry'].apply(_normalize_registry)
+
     standardized_df.replace('', pd.NA, inplace=True)
     standardized_df.dropna(how='all', inplace=True)
     standardized_df.fillna('', inplace=True)
@@ -375,6 +807,26 @@ def process_file_indexing_data(df: pd.DataFrame) -> pd.DataFrame:
 
     if 'file_number' in standardized_df.columns:
         standardized_df['file_number'] = standardized_df['file_number'].str.upper()
+
+    if 'cofo_date' in standardized_df.columns:
+        def _normalize_cofo_for_preview(value: Any) -> str:
+            normalized_date = _normalize_cofo_date(value)
+            if normalized_date:
+                return normalized_date
+            normalized_string = _normalize_string(value)
+            return normalized_string or ''
+
+        standardized_df['cofo_date'] = standardized_df['cofo_date'].apply(_normalize_cofo_for_preview)
+
+    if 'deeds_time' in standardized_df.columns:
+        def _normalize_time_for_preview(value: Any) -> str:
+            normalized_time = _normalize_time_field(value)
+            if normalized_time:
+                return normalized_time
+            normalized_string = _normalize_string(value)
+            return normalized_string or ''
+
+        standardized_df['deeds_time'] = standardized_df['deeds_time'].apply(_normalize_time_for_preview)
 
     return standardized_df
 
@@ -498,12 +950,23 @@ def _check_spacing_issue(file_number: str) -> Optional[Dict[str, str]]:
     if not re.search(r'\s', file_number):
         return None
 
-    base_without_temp = re.sub(r'\s*\(TEMP\)\s*$', '', file_number, flags=re.IGNORECASE)
-    if not re.search(r'\s', base_without_temp):
+    normalized_with_temp = _normalize_temp_suffix_format(file_number)
+    temp_match = re.search(r'\s*\(TEMP\)$', normalized_with_temp, flags=re.IGNORECASE)
+
+    suffix = ''
+    base_value = normalized_with_temp
+    if temp_match:
+        base_value = normalized_with_temp[:temp_match.start()].rstrip('- ')
+        suffix = ' (TEMP)'
+
+    if not re.search(r'\s', base_value):
         return None
 
-    compact = _strip_all_whitespace(file_number)
-    suggested_fix = _normalize_temp_suffix_format(compact)
+    hyphenated = re.sub(r'\s+', '-', base_value.strip())
+    hyphenated = re.sub(r'-{2,}', '-', hyphenated).strip('-')
+
+    candidate = f"{hyphenated}{suffix}" if hyphenated else _strip_all_whitespace(file_number)
+    suggested_fix = _normalize_temp_suffix_format(candidate)
     return {'suggested_fix': suggested_fix}
 
 
@@ -527,8 +990,11 @@ def _assign_property_ids(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     property_counter = _get_next_property_id_counter()
     file_number_prop_cache: Dict[str, str] = {}
 
+    standardized_numbers = [_standardize_file_number(record.get('file_number')) for record in records]
+    existing_props = _bulk_lookup_existing_property_ids(standardized_numbers)
+
     for idx, record in enumerate(records):
-        file_number = record.get('file_number', '').strip()
+        file_number = standardized_numbers[idx]
         if not file_number:
             continue
 
@@ -544,7 +1010,7 @@ def _assign_property_ids(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             record['prop_id'] = existing_session_prop_id
             continue
 
-        existing_prop_id = _find_existing_property_id(file_number)
+        existing_prop_id = existing_props.get(file_number)
 
         if existing_prop_id:
             property_assignments.append({
@@ -658,13 +1124,14 @@ def _find_existing_property_id(file_number: str) -> Optional[str]:
 
 __all__ = [
     'TRACKING_ID_PREFIX',
-    'DEFAULT_CREATED_BY',
     '_format_value',
     '_normalize_string',
     '_normalize_numeric_field',
     '_collapse_whitespace',
     '_strip_all_whitespace',
     '_normalize_temp_suffix_format',
+    '_normalize_registry',
+    '_normalize_time_field',
     '_combine_location',
     '_build_reg_no',
     '_has_cofo_payload',

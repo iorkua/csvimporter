@@ -14,7 +14,7 @@ class FileIndexing(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     registry = Column(String(255))
-    batch_no = Column(String(50))
+    batch_no = Column(Integer)  # Changed to Integer to match SQL Server schema
     file_number = Column(String(100), unique=True, nullable=False)
     file_title = Column(String(500))
     land_use_type = Column(String(100))
@@ -36,6 +36,10 @@ class FileIndexing(Base):
     prop_id = Column('prop_id', String(100))
     is_updated = Column(Boolean, default=False)
     is_deleted = Column(Boolean, default=False)
+    # Fields from actual database schema
+    sys_batch_no = Column(String(255))  # System batch number
+    group = Column(String(255))  # Group field
+    test_control = Column(String(20), default='PRODUCTION')
 
 
 class CofO(Base):
@@ -62,6 +66,7 @@ class CofO(Base):
     grantee = Column('Grantee', String(255))
     cofo_date = Column('cofo_date', String(100))
     prop_id = Column('prop_id', String(100))
+    test_control = Column('test_control', String(20), default='PRODUCTION')
 
 class RackShelfLabel(Base):
     __tablename__ = 'Rack_Shelf_Labels'
@@ -107,6 +112,7 @@ class FileNumber(Base):
     plot_no = Column('plot_no', String(100))
     tp_no = Column('tp_no', String(100))
     tracking_id = Column('tracking_id', String(50))
+    test_control = Column('test_control', String(20), default='PRODUCTION')
 
 
 class Grouping(Base):
@@ -114,8 +120,8 @@ class Grouping(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     awaiting_fileno = Column(String(150), unique=True)
-    mls_fileno = Column(String(150))
-    mapping = Column(Integer, default=0)
+    indexing_mls_fileno = Column(String(150))
+    indexing_mapping = Column(Integer, default=0)
     mdc_batch_no = Column(String(50))
     shelf_rack = Column(String(100))
     created_by = Column(String(255))
@@ -123,6 +129,10 @@ class Grouping(Base):
     date_index = Column(DateTime)
     number = Column(String(100))
     registry = Column(String(100))
+    group = Column(String(100))  # Group field
+    sys_batch_no = Column(String(50))  # System batch number
+    test_control = Column('test_control', String(20), default='PRODUCTION')
+    tracking_id = Column(String(50))
 
 def get_database_url():
     # Check if SQL Server configuration is available

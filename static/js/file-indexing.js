@@ -19,23 +19,60 @@ class FileIndexingManager {
         this.pageSizeOptions = [10, 25, 50, 100];
         this.pageSize = 25;
         this.currentPage = 1;
+        this.testControlSelect = document.getElementById('testControlSelect');
+        this.testControlMode = this.testControlSelect?.value && this.testControlSelect.value !== ''
+            ? this.testControlSelect.value.toUpperCase()
+            : null;
+        this.clearModeBtn = document.getElementById('clearModeBtn');
+        this.confirmClearDataBtn = document.getElementById('confirmClearDataBtn');
+        const clearDataModalElement = document.getElementById('clearDataModal');
+        this.clearDataModal = (this.clearModeBtn && clearDataModalElement && window.bootstrap && window.bootstrap.Modal)
+            ? new window.bootstrap.Modal(clearDataModalElement)
+            : null;
+        this.isClearingMode = false;
+        this.propIdHeader = document.getElementById('propIdHeader');
+        this.shouldShowPropIdColumn = false;
         
         this.initializeEventListeners();
         this.initializePaginationControls();
         this.renderGroupingPreview();
         this.checkForSession();
+        this.updateModeButtons();
     }
     
     initializeEventListeners() {
         // File upload events
         const csvFileInput = document.getElementById('csvFile');
         const uploadBtn = document.getElementById('uploadBtn');
-        
+        const testControlSelect = this.testControlSelect;
+        const clearModeBtn = this.clearModeBtn;
+        const confirmClearDataBtn = this.confirmClearDataBtn;
+
         csvFileInput?.addEventListener('change', () => {
-            uploadBtn.disabled = !csvFileInput.files.length;
+            this.updateUploadButtonState();
         });
-        
+
+        testControlSelect?.addEventListener('change', (event) => {
+            const value = event.target.value || '';
+            this.testControlMode = value ? value.toUpperCase() : null;
+            if (this.testControlSelect && this.testControlMode) {
+                this.testControlSelect.value = this.testControlMode;
+            }
+            this.updateUploadButtonState();
+            this.updateModeButtons();
+        });
+
         uploadBtn?.addEventListener('click', () => this.uploadFile());
+        clearModeBtn?.addEventListener('click', () => {
+            if (!this.modeIsSelected()) {
+                return;
+            }
+            if (this.clearDataModal) {
+                this.clearDataModal.show();
+            }
+        });
+
+        confirmClearDataBtn?.addEventListener('click', () => this.handleClearMode());
         
         // Import button
         document.getElementById('importBtn')?.addEventListener('click', () => this.startImport());
@@ -65,6 +102,113 @@ class FileIndexingManager {
                 this.goToPage(targetPage);
             }
         });
+
+        this.updateUploadButtonState();
+    }
+
+    updateUploadButtonState() {
+        const uploadBtn = document.getElementById('uploadBtn');
+        const fileInput = document.getElementById('csvFile');
+        const fileSelected = Boolean(fileInput?.files?.length);
+        const modeSelected = this.testControlMode === 'TEST' || this.testControlMode === 'PRODUCTION';
+
+        if (uploadBtn) {
+            uploadBtn.disabled = !(fileSelected && modeSelected);
+        }
+
+        this.updateModeButtons();
+    }
+
+    modeIsSelected() {
+        return this.testControlMode === 'TEST' || this.testControlMode === 'PRODUCTION';
+    }
+
+    updateModeButtons() {
+        if (!this.clearModeBtn || this.isClearingMode) {
+            return;
+        }
+        this.clearModeBtn.disabled = !this.modeIsSelected();
+        if (this.confirmClearDataBtn) {
+            this.confirmClearDataBtn.disabled = !this.modeIsSelected() || this.isClearingMode;
+        }
+    }
+
+    setClearModeLoading(isLoading) {
+        if (!this.clearModeBtn) {
+            return;
+        }
+
+        if (isLoading) {
+            if (!this.clearModeBtn.dataset.originalContent) {
+                this.clearModeBtn.dataset.originalContent = this.clearModeBtn.innerHTML;
+            }
+            this.clearModeBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Clearing...';
+        } else {
+            const original = this.clearModeBtn.dataset.originalContent;
+            if (original) {
+                this.clearModeBtn.innerHTML = original;
+            }
+        }
+
+        this.clearModeBtn.disabled = isLoading || !this.modeIsSelected();
+        if (this.confirmClearDataBtn) {
+            this.confirmClearDataBtn.disabled = isLoading;
+        }
+    }
+
+    async handleClearMode() {
+        if (!this.modeIsSelected() || this.isClearingMode) {
+            return;
+        }
+
+        const mode = this.testControlMode;
+        const modeLabel = mode === 'TEST' ? 'TEST' : 'PRODUCTION';
+
+        this.isClearingMode = true;
+        this.setClearModeLoading(true);
+
+        try {
+            const response = await fetch('/api/file-indexing/clear-data', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ mode })
+            });
+
+            if (!response.ok) {
+                const errorBody = await response.json().catch(() => ({}));
+                const message = errorBody.detail || 'Failed to clear data. Please try again.';
+                throw new Error(message);
+            }
+
+            const result = await response.json();
+            const counts = result.counts || {};
+            const entries = Object.entries(counts);
+            const totalCleared = entries.reduce((sum, [, value]) => sum + (Number(value) || 0), 0);
+            const detailText = entries
+                .map(([table, value]) => `${table}: ${Number(value) || 0}`)
+                .join(', ');
+
+            const summary = totalCleared > 0
+                ? `Cleared ${totalCleared} ${modeLabel} rows (${detailText}).`
+                : `No ${modeLabel} rows found to clear.`;
+
+            this.showNotification(summary, 'success');
+            if (this.clearDataModal) {
+                this.clearDataModal.hide();
+            }
+        } catch (error) {
+            console.error('Clear data error:', error);
+            this.showNotification(error.message || 'Failed to clear data', 'error');
+            if (this.clearDataModal) {
+                this.clearDataModal.hide();
+            }
+        } finally {
+            this.isClearingMode = false;
+            this.setClearModeLoading(false);
+            this.updateModeButtons();
+        }
     }
 
     initializePaginationControls() {
@@ -92,9 +236,15 @@ class FileIndexingManager {
     async uploadFile() {
         const fileInput = document.getElementById('csvFile');
         const file = fileInput.files[0];
+        const testControl = this.testControlMode;
         
         if (!file) {
             this.showNotification('Please select a CSV file', 'warning');
+            return;
+        }
+
+        if (!testControl) {
+            this.showNotification('Select whether this upload is TEST or PRODUCTION before proceeding.', 'warning');
             return;
         }
         
@@ -104,6 +254,7 @@ class FileIndexingManager {
         
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('test_control', testControl);
         
         try {
             const response = await fetch('/api/upload-csv', {
@@ -118,6 +269,13 @@ class FileIndexingManager {
             
             const result = await response.json();
             this.currentSessionId = result.session_id;
+            if (result.test_control) {
+                this.testControlMode = result.test_control;
+                if (this.testControlSelect) {
+                    this.testControlSelect.value = result.test_control;
+                }
+                this.updateModeButtons();
+            }
             
             // Update URL to include session_id
             const newUrl = new URL(window.location);
@@ -163,6 +321,7 @@ class FileIndexingManager {
             this.showSection('upload-section');
         } finally {
             this.hideSection('progress-section');
+            this.updateUploadButtonState();
         }
     }
     
@@ -179,6 +338,14 @@ class FileIndexingManager {
             this.currentData = result.data;
             this.multipleOccurrences = result.multiple_occurrences;
             this.groupingPreview = result.grouping_preview || { rows: [], summary: {} };
+
+            if (result.test_control) {
+                this.testControlMode = result.test_control;
+                if (this.testControlSelect) {
+                    this.testControlSelect.value = result.test_control;
+                }
+                this.updateModeButtons();
+            }
             
             // Update QC data if it exists
             if (result.qc_issues) {
@@ -199,6 +366,7 @@ class FileIndexingManager {
             this.renderGroupingPreview();
             this.renderQCIssues();
             this.showSection('preview-section');
+            this.updateUploadButtonState();
             
         } catch (error) {
             console.error('Preview data error:', error);
@@ -232,8 +400,8 @@ class FileIndexingManager {
         if (!rows.length) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="6" class="text-center text-muted py-4">
-                        No grouping matches evaluated yet. Upload a file to preview automatic shelf resolution.
+                    <td colspan="5" class="text-center text-muted py-4">
+                        No grouping matches evaluated yet. Upload a file to preview grouping matches.
                     </td>
                 </tr>`;
             return;
@@ -246,13 +414,43 @@ class FileIndexingManager {
             const tr = document.createElement('tr');
             this.applyGroupingStatusStyle(tr, status);
 
+            const originalNumber = row.file_number || '';
+            const normalizedNumber = row.normalized_file_number || '';
+            const awaitingDisplay = row.awaiting_fileno || '';
+            const awaitingNormalized = row.awaiting_normalized || '';
+            const statusReason = row.reason || row.notes || '';
+
+            const normalizedMarkup = normalizedNumber && normalizedNumber !== originalNumber.toUpperCase()
+                ? `<div class="text-muted small">Normalized: ${normalizedNumber}</div>`
+                : '';
+
+            const awaitingDetails = [];
+            if (awaitingDisplay) {
+                awaitingDetails.push(`Awaiting: ${awaitingDisplay}`);
+            }
+            if (awaitingNormalized && awaitingDisplay && awaitingNormalized !== awaitingDisplay.toUpperCase()) {
+                awaitingDetails.push(`Awaiting normalized: ${awaitingNormalized}`);
+            }
+            const awaitingMarkup = awaitingDetails.length
+                ? `<div class="text-muted small">${awaitingDetails.join(' · ')}</div>`
+                : '';
+
+            const reasonMarkup = statusReason
+                ? `<div>${statusReason}</div>`
+                : '';
+
             tr.innerHTML = `
-                <td>${row.file_number || ''}</td>
+                <td>
+                    <div>${originalNumber}</div>
+                    ${normalizedMarkup}
+                </td>
                 <td>${this.getGroupingStatusBadge(status)}</td>
-                <td>${row.shelf_rack || ''}</td>
                 <td>${row.grouping_registry || ''}</td>
                 <td>${row.grouping_number || ''}</td>
-                <td>${row.reason || row.notes || ''}</td>
+                <td>
+                    ${reasonMarkup}
+                    ${awaitingMarkup}
+                </td>
             `;
 
             tbody.appendChild(tr);
@@ -474,6 +672,41 @@ class FileIndexingManager {
         }
     }
 
+    setAutoFixLoading(isLoading) {
+        const applyAllBtn = document.getElementById('applyAllFixesBtn');
+        const idleState = document.getElementById('applyAllFixesIdleState');
+        const loadingState = document.getElementById('applyAllFixesLoadingState');
+        const fixableCountEl = document.getElementById('fixableIssuesCount');
+
+        if (!applyAllBtn || !idleState || !loadingState) {
+            return;
+        }
+
+        if (isLoading) {
+            applyAllBtn.disabled = true;
+            applyAllBtn.setAttribute('aria-busy', 'true');
+            idleState.classList.add('d-none');
+            loadingState.classList.remove('d-none');
+
+            if (fixableCountEl) {
+                fixableCountEl.dataset.originalText = fixableCountEl.textContent || '';
+                fixableCountEl.textContent = 'Fixing in progress...';
+            }
+        } else {
+            applyAllBtn.disabled = false;
+            applyAllBtn.removeAttribute('aria-busy');
+            idleState.classList.remove('d-none');
+            loadingState.classList.add('d-none');
+
+            if (fixableCountEl && fixableCountEl.dataset.originalText !== undefined) {
+                if (fixableCountEl.textContent === 'Fixing in progress...') {
+                    fixableCountEl.textContent = fixableCountEl.dataset.originalText;
+                }
+                delete fixableCountEl.dataset.originalText;
+            }
+        }
+    }
+
     async applyAllAutoFixes() {
         const allIssues = [];
         
@@ -494,11 +727,14 @@ class FileIndexingManager {
             return;
         }
 
-        try {
-            if (!this.currentSessionId) {
-                throw new Error('No active session. Please upload a file first.');
-            }
+        if (!this.currentSessionId) {
+            this.showNotification('No active session. Please upload a file first.', 'warning');
+            return;
+        }
 
+        this.setAutoFixLoading(true);
+
+        try {
             const response = await fetch(`/api/qc/apply-fixes/${this.currentSessionId}`, {
                 method: 'POST',
                 headers: {
@@ -533,6 +769,8 @@ class FileIndexingManager {
         } catch (error) {
             console.error('Bulk auto-fix error:', error);
             this.showNotification(`Failed to apply fixes: ${error.message}`, 'error');
+        } finally {
+            this.setAutoFixLoading(false);
         }
     }
 
@@ -546,19 +784,70 @@ class FileIndexingManager {
             .replace(/'/g, '&#39;');
     }
 
+    recordHasCofoPayload(record) {
+        if (!record || typeof record !== 'object') {
+            return false;
+        }
+        const cofoFields = ['cofo_date', 'serial_no', 'page_no', 'vol_no', 'deeds_time', 'deeds_date'];
+        return cofoFields.some((field) => {
+            const value = record[field];
+            if (value === null || value === undefined) {
+                return false;
+            }
+            const normalized = String(value).trim();
+            return normalized.length > 0 && normalized.toLowerCase() !== 'nan';
+        });
+    }
+
+    updatePropIdColumnVisibility() {
+        const shouldShow = this.currentData.some((record) => this.recordHasCofoPayload(record));
+        this.shouldShowPropIdColumn = shouldShow;
+        if (this.propIdHeader) {
+            this.propIdHeader.style.display = shouldShow ? '' : 'none';
+        }
+    }
+
+    refreshPropIdCells() {
+        const tbody = document.getElementById('previewTableBody');
+        if (!tbody) {
+            return;
+        }
+
+        const rows = tbody.querySelectorAll('tr');
+        rows.forEach((row) => {
+            const cell = row.querySelector('.prop-id-cell');
+            if (!cell) {
+                return;
+            }
+
+            const indexAttr = row.dataset.index;
+            const recordIndex = Number(indexAttr);
+            const record = Number.isNaN(recordIndex) ? null : this.currentData[recordIndex];
+            const hasCofoPayload = record ? this.recordHasCofoPayload(record) : false;
+
+            cell.style.display = this.shouldShowPropIdColumn ? '' : 'none';
+            cell.textContent = hasCofoPayload && record?.prop_id !== undefined && record?.prop_id !== null
+                ? String(record.prop_id)
+                : '';
+        });
+    }
+
     renderPreviewTable() {
         const tbody = document.getElementById('previewTableBody');
         if (!tbody) return;
         
+        this.updatePropIdColumnVisibility();
+
         const totalRecords = this.currentData.length;
         const totalPages = this.getTotalPages();
 
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+        const columnCount = this.shouldShowPropIdColumn ? 20 : 19;
 
         if (totalRecords === 0) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="19" class="text-center text-muted py-4">
+                    <td colspan="${columnCount}" class="text-center text-muted py-4">
                         No records to display. Upload a file to see preview data.
                     </td>
                 </tr>`;
@@ -581,9 +870,9 @@ class FileIndexingManager {
 
         const { startIndex, endIndex } = this.getCurrentPageRange();
         const pageData = this.currentData.slice(startIndex, endIndex);
-        
+
         tbody.innerHTML = '';
-        
+
         pageData.forEach((record, pageIndex) => {
             const actualIndex = startIndex + pageIndex;
             const displayIndex = actualIndex + 1;
@@ -598,6 +887,7 @@ class FileIndexingManager {
         
         this.updateSelectAllState();
         this.renderPaginationControls();
+        this.refreshPropIdCells();
     }
     
     createTableRow(record, displayIndex, actualIndex) {
@@ -610,30 +900,36 @@ class FileIndexingManager {
             tr.classList.add('table-warning');
         }
         
+        const safe = (value) => this.escapeHtml(value ?? '');
+        const hasCofoPayload = this.recordHasCofoPayload(record);
+        const propIdCellStyle = this.shouldShowPropIdColumn ? '' : ' style="display:none;"';
+        const propIdDisplayValue = hasCofoPayload ? safe(record.prop_id) : '';
+
         tr.innerHTML = `
             <td>
                 <input type="checkbox" class="row-select" data-index="${actualIndex}">
             </td>
             <td>${displayIndex}</td>
             <td class="editable-cell" data-field="file_number" data-index="${actualIndex}">
-                ${record.file_number || ''}
+                ${safe(record.file_number)}
                 ${hasMultipleOccurrences ? `<span class="badge bg-warning ms-1">×${hasMultipleOccurrences.count}</span>` : ''}
             </td>
-            <td>${record.prop_id || ''}</td>
-            <td class="editable-cell" data-field="registry" data-index="${actualIndex}">${record.registry || ''}</td>
-            <td class="editable-cell" data-field="batch_no" data-index="${actualIndex}">${record.batch_no || ''}</td>
-            <td class="editable-cell" data-field="file_title" data-index="${actualIndex}">${record.file_title || ''}</td>
-            <td class="editable-cell" data-field="district" data-index="${actualIndex}">${record.district || ''}</td>
-            <td class="editable-cell" data-field="lga" data-index="${actualIndex}">${record.lga || ''}</td>
-            <td class="editable-cell" data-field="plot_number" data-index="${actualIndex}">${record.plot_number || ''}</td>
-            <td class="editable-cell" data-field="tp_no" data-index="${actualIndex}">${record.tp_no || ''}</td>
-            <td class="editable-cell" data-field="lpkn_no" data-index="${actualIndex}">${record.lpkn_no || ''}</td>
-            <td class="editable-cell" data-field="cofo_date" data-index="${actualIndex}">${record.cofo_date || ''}</td>
-            <td class="editable-cell" data-field="serial_no" data-index="${actualIndex}">${record.serial_no || ''}</td>
-            <td class="editable-cell" data-field="page_no" data-index="${actualIndex}">${record.page_no || ''}</td>
-            <td class="editable-cell" data-field="vol_no" data-index="${actualIndex}">${record.vol_no || ''}</td>
-            <td class="editable-cell" data-field="deeds_time" data-index="${actualIndex}">${record.deeds_time || ''}</td>
-            <td class="editable-cell" data-field="deeds_date" data-index="${actualIndex}">${record.deeds_date || ''}</td>
+            <td class="prop-id-cell"${propIdCellStyle}>${propIdDisplayValue}</td>
+            <td class="editable-cell" data-field="registry" data-index="${actualIndex}">${safe(record.registry)}</td>
+            <td class="editable-cell" data-field="batch_no" data-index="${actualIndex}">${safe(record.batch_no)}</td>
+            <td class="editable-cell" data-field="file_title" data-index="${actualIndex}">${safe(record.file_title)}</td>
+            <td class="editable-cell" data-field="district" data-index="${actualIndex}">${safe(record.district)}</td>
+            <td class="editable-cell" data-field="lga" data-index="${actualIndex}">${safe(record.lga)}</td>
+            <td class="editable-cell" data-field="plot_number" data-index="${actualIndex}">${safe(record.plot_number)}</td>
+            <td class="editable-cell" data-field="tp_no" data-index="${actualIndex}">${safe(record.tp_no)}</td>
+            <td class="editable-cell" data-field="lpkn_no" data-index="${actualIndex}">${safe(record.lpkn_no)}</td>
+            <td class="editable-cell" data-field="cofo_date" data-index="${actualIndex}">${safe(record.cofo_date)}</td>
+            <td class="editable-cell" data-field="serial_no" data-index="${actualIndex}">${safe(record.serial_no)}</td>
+            <td class="editable-cell" data-field="page_no" data-index="${actualIndex}">${safe(record.page_no)}</td>
+            <td class="editable-cell" data-field="vol_no" data-index="${actualIndex}">${safe(record.vol_no)}</td>
+            <td class="editable-cell" data-field="deeds_time" data-index="${actualIndex}">${safe(record.deeds_time)}</td>
+            <td class="editable-cell" data-field="deeds_date" data-index="${actualIndex}">${safe(record.deeds_date)}</td>
+            <td class="editable-cell" data-field="created_by" data-index="${actualIndex}">${safe(record.created_by)}</td>
             <td class="actions-column">
                 <div class="btn-group btn-group-sm">
                     <button class="btn btn-outline-primary edit-row" data-index="${actualIndex}" title="Edit Row">
@@ -651,9 +947,9 @@ class FileIndexingManager {
             cell.addEventListener('click', () => this.editCell(cell));
         });
         
-    // Add row action listeners
-    tr.querySelector('.delete-row')?.addEventListener('click', () => this.deleteRow(actualIndex));
-    tr.querySelector('.row-select')?.addEventListener('change', (e) => this.handleRowSelect(e, actualIndex));
+        // Add row action listeners
+        tr.querySelector('.delete-row')?.addEventListener('click', () => this.deleteRow(actualIndex));
+        tr.querySelector('.row-select')?.addEventListener('change', (e) => this.handleRowSelect(e, actualIndex));
         
         return tr;
     }
@@ -685,6 +981,12 @@ class FileIndexingManager {
             this.currentData[index][field] = newValue;
             cell.textContent = newValue;
             cell.classList.add('table-info'); // Mark as edited
+
+            const cofoFields = ['cofo_date', 'serial_no', 'page_no', 'vol_no', 'deeds_time', 'deeds_date'];
+            if (cofoFields.includes(field)) {
+                this.updatePropIdColumnVisibility();
+                this.refreshPropIdCells();
+            }
         };
         
         const cancelEdit = () => {

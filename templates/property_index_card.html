@@ -3,13 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Property Index Card - KLAES Data Tools</title>
-    <!-- Bootstrap CSS -->
+    <title>Property Index Card Import - KLAES Data Tools</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome -->
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <!-- Custom CSS -->
-    <link href="/static/css/style.css" rel="stylesheet">
+    <link href="/static/css/style.css?v=20251124-6" rel="stylesheet">
 </head>
 <body>
     <div class="container-fluid">
@@ -17,15 +14,13 @@
             <!-- Sidebar -->
             <nav id="sidebar" class="col-md-3 col-lg-2 d-md-block bg-dark sidebar collapse">
                 <div class="position-sticky pt-3">
-                    <!-- Logo/Header -->
                     <div class="sidebar-header text-center mb-4">
                         <h4 class="text-white">
-                            <i class="fas fa-file-csv text-primary"></i>
+                            <i class="fas fa-file-csv text-primary"></i><br>
                             KLAES Data Tools
                         </h4>
                     </div>
 
-                    <!-- Navigation Menu -->
                     <ul class="nav flex-column">
                         <li class="nav-item">
                             <a class="nav-link text-light" href="/">
@@ -37,12 +32,6 @@
                             <a class="nav-link text-light" href="/file-indexing">
                                 <i class="fas fa-folder-open me-2"></i>
                                 File Indexing
-                            </a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link text-light" href="/excel-converter">
-                                <i class="fas fa-file-excel me-2"></i>
-                                Excel Converter
                             </a>
                         </li>
                         <li class="nav-item">
@@ -60,7 +49,7 @@
                         <li class="nav-item">
                             <a class="nav-link active text-white" href="/pic">
                                 <i class="fas fa-id-card me-2"></i>
-                                Property Index Card
+                                PIC
                             </a>
                         </li>
 
@@ -80,7 +69,6 @@
                         </li>
                     </ul>
 
-                    <!-- Footer -->
                     <div class="sidebar-footer mt-5 pt-3 border-top border-secondary">
                         <small class="text-muted d-block text-center">
                             Version 1.0.0
@@ -91,150 +79,381 @@
 
             <!-- Main Content -->
             <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
-                <!-- Top Navigation Bar -->
                 <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
-                    <h1 class="h2">
+                    <h1 class="h2 mb-0">
                         <button class="btn btn-outline-secondary d-md-none me-3" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar">
                             <i class="fas fa-bars"></i>
                         </button>
                         <i class="fas fa-id-card me-2"></i>
-                        Property Index Card
+                        Property Index Card Import
                     </h1>
                     <div class="btn-toolbar mb-2 mb-md-0">
-                        <div class="btn-group me-2">
-                            <button type="button" class="btn btn-sm btn-outline-secondary" id="picExportBtn" disabled>
-                                <i class="fas fa-download me-1"></i>
-                                Export
-                            </button>
-                        </div>
-                        <button type="button" class="btn btn-sm btn-primary" id="picNewCardBtn" disabled>
-                            <i class="fas fa-plus me-1"></i>
-                            New Card
+                        <button type="button" class="btn btn-sm btn-primary" id="importPicBtn" disabled>
+                            <i class="fas fa-upload me-1"></i>
+                            Import PIC Data
                         </button>
                     </div>
                 </div>
 
-                <!-- Content Area -->
-                <div class="content-area">
-                    <div class="row">
-                        <div class="col-12">
-                            <div class="card mb-4">
-                                <div class="card-body">
-                                    <div class="d-flex align-items-start">
-                                        <div class="me-3 text-primary" style="font-size: 2.5rem;">
-                                            <i class="fas fa-layer-group"></i>
-                                        </div>
-                                        <div>
-                                            <h4 class="card-title mb-2">Property Index Card Workspace</h4>
-                                            <p class="text-muted mb-3">
-                                                This page will orchestrate PIC lookups, card generation, and batch exports. We'll wire detailed business logic next.
-                                            </p>
-                                            <ul class="text-muted small mb-0">
-                                                <li id="picStatusPlaceholder">Upload, search, and QC flows will appear here once configured.</li>
-                                                <li>Frontend hooks live in <code>static/js/pic.js</code>; backend endpoints will be added to <code>main.py</code>.</li>
-                                                <li>Use this scaffold to align UI layouts before binding live data.</li>
-                                            </ul>
-                                        </div>
+                <div id="picAlertContainer"></div>
+
+                <div class="row mb-4">
+                    <div class="col-lg-8">
+                        <div class="card">
+                            <div class="card-header">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-cloud-upload-alt me-2"></i>
+                                    Upload CSV File for PIC Import
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <p class="text-muted mb-3">
+                                    Upload a CSV or Excel file containing Property Index Card details. We will map the headers to property records and certificate previews, call out register vs card serial gaps, and surface QC findings before import.
+                                </p>
+
+                                <div class="mb-3">
+                                    <label for="picTestControlSelect" class="form-label">Data Mode<span class="text-danger ms-1">*</span></label>
+                                    <div class="d-flex flex-column flex-lg-row align-items-lg-center gap-2">
+                                        <select class="form-select" id="picTestControlSelect" required>
+                                            <option value="" selected disabled>Select environment</option>
+                                            <option value="PRODUCTION">Production</option>
+                                            <option value="TEST">Test</option>
+                                        </select>
+                                        <button type="button" class="btn btn-outline-danger" id="picClearModeBtn" data-bs-toggle="modal" data-bs-target="#picClearDataModal" disabled>
+                                            <i class="fas fa-trash-alt me-1"></i>
+                                            Clear Selected Data
+                                        </button>
+                                    </div>
+                                    <small class="text-muted">Choose <strong>TEST</strong> when loading temporary records; choose <strong>PRODUCTION</strong> for live data.</small>
+                                </div>
+
+                                <form id="picUploadForm" enctype="multipart/form-data">
+                                    <div class="mb-3">
+                                        <input type="file" class="form-control" id="picFileInput" accept=".csv,.xlsx,.xls" required>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary" id="picUploadBtn">
+                                        <i class="fas fa-upload me-2"></i>
+                                        Upload &amp; Preview
+                                    </button>
+                                </form>
+
+                                <div id="picUploadProgress" class="mt-3" style="display: none;">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <small class="text-muted">Uploading and processing...</small>
+                                        <small class="text-muted" id="picProgressText">0%</small>
+                                    </div>
+                                    <div class="progress">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%" id="picProgressBar"></div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <div class="row" id="picSummaryRow" style="display: none;">
-                        <div class="col-md-3">
-                            <div class="card text-center shadow-sm">
-                                <div class="card-body">
-                                    <i class="fas fa-database text-info mb-2" style="font-size: 2rem;"></i>
-                                    <h5 class="card-title" id="picTotalCards">0</h5>
-                                    <p class="card-text text-muted">Total Cards</p>
-                                </div>
+                    <div class="col-lg-4">
+                        <div class="card">
+                            <div class="card-header bg-info text-white">
+                                <h6 class="card-title mb-0">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    Suggested PIC Columns
+                                </h6>
+                            </div>
+                            <div class="card-body">
+                                <ul class="list-unstyled mb-0 small">
+                                    <li>• MLSFileNo</li>
+                                    <li>• SerialNo / serialNo</li>
+                                    <li>• Transaction Type</li>
+                                    <li>• Grantor / Grantee / Assignee</li>
+                                    <li>• Property Description</li>
+                                    <li>• Location / Street / District</li>
+                                    <li>• Assignment Date / Date Approved</li>
+                                    <li>• Page No / Volume No / Reg No</li>
+                                    <li>• Comments &amp; Remarks</li>
+                                    <li>• Plot Size / Layout / Period</li>
+                                </ul>
+                                <p class="text-muted small mt-3 mb-0">
+                                    These columns populate property records, CofO previews, and QC summaries for the PIC workflow.
+                                </p>
                             </div>
                         </div>
-                        <div class="col-md-3">
-                            <div class="card text-center shadow-sm">
-                                <div class="card-body">
-                                    <i class="fas fa-check-circle text-success mb-2" style="font-size: 2rem;"></i>
-                                    <h5 class="card-title" id="picReadyCards">0</h5>
-                                    <p class="card-text text-muted">Ready for Export</p>
-                                </div>
+                    </div>
+                </div>
+
+                <div class="row mb-4" id="picStatisticsRow" style="display: none;">
+                    <div class="col-md-6 col-lg-4">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <i class="fas fa-file-alt text-info mb-2" style="font-size: 2rem;"></i>
+                                <h5 class="card-title" id="picTotalRecords">0</h5>
+                                <p class="card-text text-muted">Total Rows</p>
                             </div>
                         </div>
-                        <div class="col-md-3">
-                            <div class="card text-center shadow-sm">
-                                <div class="card-body">
-                                    <i class="fas fa-exclamation-triangle text-warning mb-2" style="font-size: 2rem;"></i>
-                                    <h5 class="card-title" id="picQcIssues">0</h5>
-                                    <p class="card-text text-muted">QC Issues</p>
-                                </div>
+                    </div>
+                    <div class="col-md-6 col-lg-4">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <i class="fas fa-check-circle text-success mb-2" style="font-size: 2rem;"></i>
+                                <h5 class="card-title" id="picReadyRecords">0</h5>
+                                <p class="card-text text-muted">Ready for Import</p>
                             </div>
                         </div>
-                        <div class="col-md-3">
-                            <div class="card text-center shadow-sm">
-                                <div class="card-body">
-                                    <i class="fas fa-layer-group text-primary mb-2" style="font-size: 2rem;"></i>
-                                    <h5 class="card-title" id="picBatchCount">0</h5>
-                                    <p class="card-text text-muted">Active Batches</p>
+                    </div>
+                </div>
+
+                <div class="row" id="picPreviewSection" style="display: none;">
+                    <div class="col-12">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <h5 class="card-title mb-0">
+                                        <i class="fas fa-table me-2"></i>
+                                        Data Preview &amp; Quality Review
+                                    </h5>
+                                    <div class="btn-group btn-group-sm" id="picFilterControls">
+                                        <button class="btn btn-outline-secondary" id="picShowAllBtn">
+                                            <i class="fas fa-eye me-1"></i>
+                                            Show All
+                                        </button>
+                                        <button class="btn btn-outline-warning" id="picShowIssuesBtn">
+                                            <i class="fas fa-exclamation-triangle me-1"></i>
+                                            Issues
+                                        </button>
+                                        <button class="btn btn-outline-success" id="picShowValidBtn">
+                                            <i class="fas fa-check me-1"></i>
+                                            Valid
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <ul class="nav nav-tabs mt-3" id="picPreviewTabs" role="tablist">
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link active" id="pic-records-tab" data-bs-toggle="tab" data-bs-target="#pic-records-pane" type="button" role="tab">
+                                            <i class="fas fa-clipboard-list me-1"></i>
+                                            Property Records (<span id="picRecordsCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="pic-cofo-tab" data-bs-toggle="tab" data-bs-target="#pic-cofo-pane" type="button" role="tab">
+                                            <i class="fas fa-certificate me-1"></i>
+                                            CofO Preview (<span id="picCofoCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="pic-file-numbers-tab" data-bs-toggle="tab" data-bs-target="#pic-file-numbers-pane" type="button" role="tab">
+                                            <i class="fas fa-folder me-1"></i>
+                                            File Numbers (<span id="picFileNumberCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="pic-fileno-tab" data-bs-toggle="tab" data-bs-target="#pic-fileno-pane" type="button" role="tab">
+                                            <i class="fas fa-hashtag me-1"></i>
+                                            File Number QC (<span id="picFileNumberIssueCount">0</span>)
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
+                            <div class="card-body">
+                                <div class="tab-content" id="picPreviewTabContent">
+                                    <div class="tab-pane fade show active" id="pic-records-pane" role="tabpanel">
+                                        <div class="table-responsive" style="display:none;" id="picRecordsTableWrapper">
+                                            <table class="table table-striped table-hover table-sm align-middle preview-table" id="picRecordsTable">
+                                                <thead class="sticky-top">
+                                                    <tr>
+                                                        <th width="50">#</th>
+                                                        <th>File Number</th>
+                                                        <th>Prop ID</th>
+                                                        <th>Transaction Type</th>
+                                                        <th>Grantor</th>
+                                                        <th>Grantee</th>
+                                                        <th>Location</th>
+                                                        <th>Assignment Date</th>
+                                                        <th>Comments</th>
+                                                        <th>Old KN No</th>
+                                                        <th>serialNo</th>
+                                                        <th>Page No</th>
+                                                        <th>Volume No</th>
+                                                        <th>Remarks</th>
+                                                        <th>Status</th>
+                                                        <th width="120" class="text-center">Delete</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="picRecordsTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div class="tab-pane fade" id="pic-cofo-pane" role="tabpanel">
+                                        <div class="table-responsive" style="display:none;" id="picCofoTableWrapper">
+                                            <table class="table table-striped table-hover table-sm align-middle preview-table" id="picCofoTable">
+                                                <thead class="sticky-top">
+                                                    <tr>
+                                                        <th width="50">#</th>
+                                                        <th>File Number</th>
+                                                        <th>Old KNNo</th>
+                                                        <th>Prop ID</th>
+                                                        <th>Transaction Type</th>
+                                                        <th>Grantor</th>
+                                                        <th>Grantee</th>
+                                                        <th>Transaction Date</th>
+                                                        <th>serialNo</th>
+                                                        <th>Page No</th>
+                                                        <th>Vol No</th>
+                                                        <th>Reg No</th>
+                                                        <th>Status</th>
+                                                        <th width="120" class="text-center">Delete</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="picCofoTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div class="tab-pane fade" id="pic-file-numbers-pane" role="tabpanel">
+                                        <div class="table-responsive" style="display:none;" id="picFileNumbersTableWrapper">
+                                            <table class="table table-striped table-hover table-sm align-middle preview-table" id="picFileNumbersTable">
+                                                <thead class="sticky-top">
+                                                    <tr>
+                                                        <th width="50">#</th>
+                                                        <th>File Number</th>
+                                                        <th>Tracking ID</th>
+                                                        <th>File Name</th>
+                                                        <th>Location</th>
+                                                        <th>MLSFIleNO</th>
+                                                        <th>Source</th>
+                                                        <th>Plot No</th>
+                                                        <th>Created By</th>
+                                                        <th>Status</th>
+                                                        <th width="120" class="text-center">Delete</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="picFileNumbersTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div class="tab-pane fade" id="pic-fileno-pane" role="tabpanel">
+                                        <div class="d-flex justify-content-end align-items-center mb-2" id="picFileNumberFixAllWrapper" style="display: none;">
+                                            <button class="btn btn-sm btn-primary" id="picFileNumberFixAllBtn" type="button">
+                                                <i class="fas fa-magic me-1"></i>
+                                                Fix All
+                                            </button>
+                                        </div>
+                                        <div class="table-responsive" style="display:none;" id="picFileNumberQcWrapper">
+                                            <table class="table table-striped table-hover" id="picFileNumberQcTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="50">#</th>
+                                                        <th>Issue Type</th>
+                                                        <th>File Number</th>
+                                                        <th>Description</th>
+                                                        <th>Suggested Fix</th>
+                                                        <th>Severity</th>
+                                                        <th width="160" class="text-center">Action</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="picFileNumberQcBody"></tbody>
+                                            </table>
+                                        </div>
+                                        <div class="alert alert-success d-none" id="picFileNumberQcEmpty">
+                                            <i class="fas fa-check-circle me-2"></i>
+                                            No file number QC issues detected.
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="d-flex justify-content-between align-items-center mt-3">
+                                    <div class="text-muted">
+                                        <small>
+                                            Showing <span id="picShowingStart">0</span> to <span id="picShowingEnd">0</span>
+                                            of <span id="picShowingTotal">0</span> rows
+                                        </small>
+                                    </div>
+                                    <nav>
+                                        <ul class="pagination pagination-sm mb-0" id="picPagination"></ul>
+                                    </nav>
                                 </div>
                             </div>
                         </div>
                     </div>
+                </div>
 
-                    <div class="card" id="picWorkspaceCard" style="display: none;">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="card-title mb-0">
-                                <i class="fas fa-table me-2"></i>
-                                Current Property Index Cards
-                            </h5>
-                            <div class="d-flex align-items-center gap-2">
-                                <div class="input-group input-group-sm" style="max-width: 260px;">
-                                    <span class="input-group-text"><i class="fas fa-search"></i></span>
-                                    <input type="text" class="form-control" id="picSearchInput" placeholder="Search by file number or prop ID" autocomplete="off">
+                <div class="row mt-4" id="picValidationPanel" style="display: none;">
+                    <div class="col-12">
+                        <div class="card border-warning">
+                            <div class="card-header bg-warning text-dark">
+                                <h5 class="card-title mb-0">
+                                    <i class="fas fa-exclamation-triangle me-2"></i>
+                                    Validation Issues
+                                </h5>
+                            </div>
+                            <div class="card-body">
+                                <p class="text-muted mb-3">
+                                    Review standardized QC categories and any blocking errors before importing.
+                                </p>
+
+                                <div id="picQcSummaryContainer" class="row g-3 mb-3"></div>
+
+                                <div class="table-responsive mb-3">
+                                    <table class="table table-sm align-middle" id="picQcIssuesTable">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th scope="col">Issue Type</th>
+                                                <th scope="col">File Number</th>
+                                                <th scope="col">Details</th>
+                                                <th scope="col">Severity</th>
+                                                <th scope="col">Notes</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="picQcIssuesBody"></tbody>
+                                    </table>
                                 </div>
-                                <button type="button" class="btn btn-sm btn-outline-secondary" id="picFilterBtn" disabled>
-                                    <i class="fas fa-filter me-1"></i>
-                                    Filters
-                                </button>
-                            </div>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-striped table-hover" id="picTable">
-                                    <thead class="table-dark sticky-top">
-                                        <tr>
-                                            <th width="50">#</th>
-                                            <th>File Number</th>
-                                            <th>Property ID</th>
-                                            <th>Location</th>
-                                            <th>Holder</th>
-                                            <th>Status</th>
-                                            <th class="text-center" width="160">Actions</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="picTableBody">
-                                        <tr class="text-muted">
-                                            <td colspan="7" class="text-center py-4">
-                                                <i class="fas fa-info-circle me-2"></i>
-                                                PIC results will display here once logic is connected.
-                                            </td>
-                                        </tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
 
-                    <div class="alert alert-info" id="picPlaceholderAlert">
-                        <i class="fas fa-plug me-2"></i>
-                        PIC endpoints and workflow wiring are pending additional requirements. Use this scaffold to stage UI components and event handlers.
+                                <div class="alert alert-success mb-0" id="picQcEmptyState" style="display: none;">
+                                    <i class="fas fa-check-circle me-2"></i>
+                                    No quality-control issues detected. You're clear to proceed with the import.
+                                </div>
+
+                            </div>
+                        </div>
                     </div>
                 </div>
             </main>
         </div>
     </div>
 
+    <div class="modal fade" id="picLoadingModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-body text-center">
+                    <div class="spinner-border text-primary mb-3" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <h5>Preparing PIC Preview...</h5>
+                    <p class="text-muted mb-0">Hang tight. We'll show the records as soon as the mappings are ready.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/pic.js?v=20251031"></script>
+    <div class="modal fade" id="picClearDataModal" tabindex="-1" aria-labelledby="picClearDataLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="picClearDataLabel">Confirm Data Clear</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    This will permanently delete Property Index Card records previously imported in the selected mode from the <code>property_records</code>, <code>CofO</code>, and <code>fileNumber</code> tables. This action cannot be undone.
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="picConfirmClearDataBtn">Yes, Clear Data</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/property-index-card.js?v=20251105-2"></script>
 </body>
 </html>

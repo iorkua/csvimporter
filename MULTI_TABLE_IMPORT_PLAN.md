@@ -58,9 +58,9 @@ Deeds Time, Deeds Date- **Key Fields**:
 
 - `serial_no` ← `Serial No`
 
-- `shelf_location` ← from `grouping.shelf_rack` (via File Number match)## Import Strategy
+- `shelf_location` ← direct from CSV input (grouping no longer drives shelf assignment)## Import Strategy
 
-- `shelf_label_id` ← from `grouping.shelf_rack` (same value)
+- `shelf_label_id` ← not used in current workflow
 
 - `tracking_id` ← shared tracking ID format: `TRK-XXXXXXXX-XXXXX`### Phase 1: CSV Validation and Parsing
 
@@ -167,7 +167,7 @@ Deeds Time, Deeds Date- **Key Fields**:
 
 - Incoming `File Number` must match EXACTLY with existing `awaiting_fileno`   ```
 
-- Extract `shelf_rack` to use as `shelf_location` in file_indexings
+- Shelf location remains whatever the CSV provides; grouping is used for mapping only
 
 3. **Error Handling**
 
@@ -177,7 +177,7 @@ Deeds Time, Deeds Date- **Key Fields**:
 
 Existing in grouping table:   - Support partial imports with error logs
 
-awaiting_fileno = "RES-1981-1", shelf_rack = "A1", mls_fileno = NULL
+awaiting_fileno = "RES-1981-1", grouping only tracks awaiting_fileno reference
 
 ## Data Flow Architecture
 
@@ -189,11 +189,11 @@ File Number = "RES-1981-1" (EXACT MATCH required)### Input Processing
 
 Update Process:CSV Upload → Validation → Column Mapping → Data Transformation
 
-SET mls_fileno = "RES-1981-1"```
+SET indexing_mls_fileno = "RES-1981-1"```
 
-SET mapping = 1
+SET indexing_mapping = 1
 
-EXTRACT shelf_rack = "A1" → use as shelf_location### Batch Management
+Shelf rack values are no longer extracted during import### Batch Management
 
 ``````
 
@@ -201,11 +201,11 @@ Record Count → Shelf Calculation → Batch Creation → Shelf Reservation
 
 **Fields Updated on Match**:```
 
-- `mls_fileno` ← `File Number` (fill in the match)
+- `indexing_mls_fileno` ← `File Number` (fill in the match)
 
 - `mdc_batch_no` ← `Batch No`### Database Operations
 
-- `mapping` ← `1` (indicates successful mapping)```
+- `indexing_mapping` ← `1` (indicates successful mapping)```
 
 - `date_indexed` ← `datetime.utcnow()`Begin Transaction → Batch Insert → Shelf Update → File Records → Commit
 

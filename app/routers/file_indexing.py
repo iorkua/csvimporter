@@ -1,18 +1,19 @@
 """API router for File Indexing workflows."""
 from __future__ import annotations
 
+import logging
 import io
 import zipfile
 from datetime import datetime
 from typing import Any, Dict, List
 
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core import session_manager
-from app.models.database import CofO, FileIndexing, SessionLocal
+from app.models.database import CofO, FileIndexing, FileNumber, Grouping, SessionLocal
 from app.services.file_indexing_service import (
     analyze_file_number_occurrences,
     process_file_indexing_data,
@@ -20,9 +21,11 @@ from app.services.file_indexing_service import (
     _assign_property_ids,
     _build_cofo_record,
     _build_grouping_preview,
-    _generate_tracking_id,
     _has_cofo_payload,
+    _normalize_cofo_date,
+    _normalize_time_field,
     _normalize_string,
+    _normalize_registry,
     _combine_location,
     _update_cofo,
     _run_qc_validation,
@@ -30,6 +33,7 @@ from app.services.file_indexing_service import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class QCFixPayload(BaseModel):
@@ -41,12 +45,23 @@ class QCFixRequest(BaseModel):
     fixes: List[QCFixPayload]
 
 
+class ClearDataRequest(BaseModel):
+    mode: str
+
+
 @router.post("/api/upload-csv")
-async def upload_csv(file: UploadFile = File(...)):
+async def upload_csv(
+    file: UploadFile = File(...),
+    test_control: str = Form(...)
+):
     """Upload and process CSV/Excel file for file indexing preview."""
     try:
         if not (file.filename.endswith('.csv') or file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
             raise HTTPException(status_code=400, detail="Only CSV and Excel files are supported")
+
+        test_control_value = (test_control or '').strip().upper()
+        if test_control_value not in {'TEST', 'PRODUCTION'}:
+            raise HTTPException(status_code=400, detail="Invalid test control value. Choose TEST or PRODUCTION.")
 
         session_id = session_manager.generate_session_id()
         content = await file.read()
@@ -90,7 +105,8 @@ async def upload_csv(file: UploadFile = File(...)):
             "total_records": len(records),
             "grouping_preview": grouping_preview,
             "qc_issues": qc_issues,
-            "property_assignments": property_id_assignments
+            "property_assignments": property_id_assignments,
+            "test_control": test_control_value
         })
 
         return {
@@ -110,7 +126,8 @@ async def upload_csv(file: UploadFile = File(...)):
             "property_id_summary": {
                 "new_assignments": len([p for p in property_id_assignments if p['status'] == 'new']),
                 "existing_found": len([p for p in property_id_assignments if p['status'] == 'existing'])
-            }
+            },
+            "test_control": test_control_value
         }
 
     except HTTPException:
@@ -130,7 +147,8 @@ async def get_preview_data(session_id: str):
         "filename": session_data["filename"],
         "grouping_preview": session_data.get("grouping_preview", {}),
         "qc_issues": session_data.get("qc_issues", {}),
-        "property_assignments": session_data.get("property_assignments", [])
+        "property_assignments": session_data.get("property_assignments", []),
+        "test_control": session_data.get("test_control", 'PRODUCTION')
     }
 
 
@@ -146,6 +164,7 @@ async def import_file_indexing(session_id: str):
     unmatched_grouping: List[Dict[str, Any]] = []
     now = datetime.utcnow()
     source_filename = session_data.get('filename', '')
+    test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
 
     try:
         for record in session_data["data"]:
@@ -153,16 +172,18 @@ async def import_file_indexing(session_id: str):
             if not file_number:
                 continue
 
+            record['test_control'] = test_control
             existing_indexing = db.query(FileIndexing).filter(FileIndexing.file_number == file_number).first()
 
+            existing_tracking_id = None
             if existing_indexing and existing_indexing.tracking_id:
-                tracking_id = existing_indexing.tracking_id
-            else:
-                tracking_id = record.get('tracking_id') or _generate_tracking_id()
+                existing_tracking_id = existing_indexing.tracking_id
+            elif record.get('tracking_id'):
+                existing_tracking_id = record['tracking_id']
 
-            record['tracking_id'] = tracking_id
+            record['tracking_id'] = existing_tracking_id
 
-            grouping_result = _apply_grouping_updates(db, record, file_number, now)
+            grouping_result = _apply_grouping_updates(db, record, file_number, now, test_control)
             status = grouping_result['status']
             grouping_summary[status] = grouping_summary.get(status, 0) + 1
             if status == 'missing':
@@ -171,11 +192,60 @@ async def import_file_indexing(session_id: str):
                     'reason': grouping_result.get('reason')
                 })
 
+            grouping_row = grouping_result.pop('grouping_record', None)
+
+            tracking_id = grouping_result.get('tracking_id') or existing_tracking_id
+            if grouping_row and grouping_row.tracking_id and not tracking_id:
+                tracking_id = grouping_row.tracking_id
+
+            if not tracking_id:
+                if status == 'matched':
+                    grouping_summary['matched'] = max(0, grouping_summary.get('matched', 0) - 1)
+                    grouping_summary['skipped'] = grouping_summary.get('skipped', 0) + 1
+                    unmatched_grouping.append({
+                        'file_number': file_number,
+                        'reason': 'Matched grouping record is missing tracking_id'
+                    })
+                logger.warning("Skipping import for %s because tracking_id is unavailable", file_number)
+                continue
+
+            record['tracking_id'] = tracking_id
+
+            if grouping_row and status == 'matched' and not grouping_row.tracking_id:
+                grouping_row.tracking_id = tracking_id
+
+            # Update record with grouping results
             record['shelf_location'] = grouping_result.get('shelf_location')
+            record['group'] = grouping_result.get('group')
+            record['sys_batch_no'] = grouping_result.get('sys_batch_no')
+
+            # Helper function to safely convert batch_no to integer
+            def safe_int_conversion(value):
+                if value is None or value == '':
+                    return None
+                try:
+                    return int(str(value).strip())
+                except (ValueError, TypeError):
+                    return None
+
+            created_by_raw = record.get('created_by')
+            created_by_value = safe_int_conversion(created_by_raw)
+            normalized_created_by = _normalize_string(created_by_raw)
+            if created_by_value is None and not normalized_created_by:
+                logger.warning("Created By missing for file number %s; preserving existing values where possible", file_number)
+            record['created_by'] = (
+                str(created_by_value) if created_by_value is not None else (normalized_created_by or '')
+            )
+
+            normalized_cofo_date = _normalize_cofo_date(record.get('cofo_date'))
+            record['cofo_date'] = normalized_cofo_date or ''
+
+            normalized_deeds_time = _normalize_time_field(record.get('deeds_time') or record.get('transaction_time'))
+            record['deeds_time'] = normalized_deeds_time or ''
 
             payload = {
-                'registry': _normalize_string(record.get('registry')) or '',
-                'batch_no': _normalize_string(record.get('batch_no')) or '',
+                'registry': _normalize_registry(record.get('registry')) or '',
+                'batch_no': safe_int_conversion(record.get('batch_no')),
                 'file_title': _normalize_string(record.get('file_title')) or '',
                 'land_use_type': _normalize_string(record.get('land_use_type')) or '',
                 'plot_number': _normalize_string(record.get('plot_number')) or '',
@@ -185,7 +255,9 @@ async def import_file_indexing(session_id: str):
                 'lga': _normalize_string(record.get('lga')) or '',
                 'location': _normalize_string(record.get('location')) or _combine_location(record.get('district'), record.get('lga')) or '',
                 'shelf_location': _normalize_string(record.get('shelf_location')) or '',
-                'serial_no': _normalize_string(record.get('serial_no')) or ''
+                'serial_no': _normalize_string(record.get('serial_no')) or '',
+                'group': _normalize_string(record.get('group')) or '',  # Copy group from grouping table
+                'sys_batch_no': _normalize_string(record.get('sys_batch_no')) or ''  # Copy sys_batch_no from grouping table
             }
 
             if existing_indexing:
@@ -193,33 +265,37 @@ async def import_file_indexing(session_id: str):
                     setattr(existing_indexing, field, value)
                 existing_indexing.tracking_id = tracking_id
                 existing_indexing.updated_at = now
-                existing_indexing.updated_by = 1
-                if not existing_indexing.prop_id:
-                    existing_indexing.prop_id = record.get('prop_id')
+                if created_by_value is not None:
+                    existing_indexing.updated_by = created_by_value
+                    if existing_indexing.created_by is None:
+                        existing_indexing.created_by = created_by_value
+                existing_indexing.test_control = test_control
             else:
                 file_record = FileIndexing(
                     file_number=file_number,
                     tracking_id=tracking_id,
                     status='Indexed',
                     created_at=now,
-                    created_by=1,
-                    prop_id=record.get('prop_id'),
+                    created_by=created_by_value if created_by_value is not None else None,
+                    updated_by=created_by_value if created_by_value is not None else None,
+                    test_control=test_control,
                     **payload
                 )
                 db.add(file_record)
             imported_count += 1
 
             if _has_cofo_payload(record):
-                cofo_record = _build_cofo_record(record)
+                cofo_record = _build_cofo_record(record, test_control)
                 if cofo_record.mls_fno:
                     existing_cofo = db.query(CofO).filter(CofO.mls_fno == cofo_record.mls_fno).first()
                     if existing_cofo:
                         _update_cofo(existing_cofo, cofo_record)
+                        existing_cofo.test_control = test_control
                     else:
                         db.add(cofo_record)
                     cofo_count += 1
 
-            _upsert_file_number(db, file_number, record, tracking_id, source_filename, now)
+            _upsert_file_number(db, file_number, record, tracking_id, source_filename, now, test_control)
             file_number_count += 1
 
         db.commit()
@@ -244,6 +320,54 @@ async def import_file_indexing(session_id: str):
             + (f" and processed {cofo_count} CofO records" if cofo_count else '')
         )
     }
+
+
+@router.post("/api/file-indexing/clear-data")
+async def clear_file_indexing_data(request: ClearDataRequest):
+    mode = (request.mode or '').strip().upper()
+    if mode not in {"TEST", "PRODUCTION"}:
+        raise HTTPException(status_code=400, detail="Invalid data mode. Choose TEST or PRODUCTION.")
+
+    db = SessionLocal()
+
+    try:
+        grouping_update_fields = {
+            Grouping.indexing_mls_fileno: None,
+            Grouping.indexing_mapping: 0,
+            Grouping.date_index: None,
+            Grouping.indexed_by: None,
+            Grouping.mdc_batch_no: None,
+            Grouping.test_control: None
+        }
+
+        grouping_query = db.query(Grouping).filter(Grouping.test_control == mode)
+        grouping_rows_affected = grouping_query.update(grouping_update_fields, synchronize_session=False)
+
+        counts = {
+            "file_indexings": db.query(FileIndexing).filter(FileIndexing.test_control == mode).delete(synchronize_session=False),
+            "CofO": db.query(CofO).filter(CofO.test_control == mode).delete(synchronize_session=False),
+            "fileNumber": db.query(FileNumber).filter(FileNumber.test_control == mode).delete(synchronize_session=False),
+            "grouping": grouping_rows_affected
+        }
+        db.commit()
+        return {
+            "success": True,
+            "mode": mode,
+            "counts": counts
+        }
+    except Exception as exc:  # pragma: no cover - safeguards against cascading delete errors
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to clear {mode} data: {exc}")
+    finally:
+        db.close()
+
+
+router.add_api_route(
+    "/api/file-indexing/clear-data/",
+    clear_file_indexing_data,
+    methods=["POST"],
+    include_in_schema=False
+)
 
 
 @router.post("/api/upload-excel")

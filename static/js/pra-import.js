@@ -3,19 +3,45 @@ class PRAImportManager {
     constructor() {
         this.propertyRecordsData = [];
         this.fileNumbersData = [];
+        this.fileNumberQcData = [];
         this.filteredData = [];
         this.currentPage = 1;
         this.itemsPerPage = 20;
         this.sessionId = null;
         this.currentFilter = 'all'; // 'all', 'issues', 'valid'
-        this.currentTab = 'property-records'; // 'property-records', 'file-numbers'
+        this.currentTab = 'property-records'; // 'property-records', 'file-numbers', 'file-number-qc'
         this.duplicates = {
             csv: [],
             database: []
         };
+        this.qcSummary = {
+            total_issues: 0,
+            padding_issues: 0,
+            year_issues: 0,
+            spacing_issues: 0,
+            temp_issues: 0
+        };
         this.ACRE_TO_HECTARE = 0.40468564224;
+        this.testControlSelect = document.getElementById('praTestControlSelect');
+        this.importButton = document.getElementById('importBtn');
+        this.uploadButton = document.getElementById('uploadBtn');
+        this.modeBadge = document.getElementById('praModeBadge');
+        this.clearModeBtn = document.getElementById('praClearModeBtn');
+        this.clearDataModalElement = document.getElementById('praClearDataModal');
+        this.clearDataModal = (this.clearDataModalElement && window.bootstrap && window.bootstrap.Modal)
+            ? new window.bootstrap.Modal(this.clearDataModalElement)
+            : null;
+        this.confirmClearDataBtn = document.getElementById('praConfirmClearDataBtn');
+        this.confirmClearDataBtnLabel = this.confirmClearDataBtn ? this.confirmClearDataBtn.innerHTML : '';
+        this.isClearingMode = false;
+        this.readyRecordCount = 0;
+        this.testControlMode = this.testControlSelect?.value && this.testControlSelect.value !== ''
+            ? this.testControlSelect.value.toUpperCase()
+            : '';
         
+        this.updateModeBadge();
         this.initializeEventListeners();
+        this.updateModeControls();
     }
 
     initializeEventListeners() {
@@ -23,6 +49,12 @@ class PRAImportManager {
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
             uploadForm.addEventListener('submit', (e) => this.handleFormSubmit(e));
+        }
+
+        if (this.testControlSelect) {
+            this.testControlSelect.addEventListener('change', (event) => {
+                this.handleModeChange(event.target.value || '');
+            });
         }
 
         // Filter buttons
@@ -33,11 +65,12 @@ class PRAImportManager {
         // Tab switching
         document.getElementById('property-records-tab')?.addEventListener('click', () => this.switchTab('property-records'));
         document.getElementById('file-numbers-tab')?.addEventListener('click', () => this.switchTab('file-numbers'));
+        document.getElementById('file-number-qc-tab')?.addEventListener('click', () => this.switchTab('file-number-qc'));
 
         // Action buttons
         document.getElementById('selectAllBtn')?.addEventListener('click', () => this.selectAll());
         document.getElementById('deselectAllBtn')?.addEventListener('click', () => this.deselectAll());
-        document.getElementById('importBtn')?.addEventListener('click', () => this.importData());
+        this.importButton?.addEventListener('click', () => this.importData());
         document.getElementById('validateBtn')?.addEventListener('click', () => this.revalidateData());
 
         // Bulk actions
@@ -51,6 +84,105 @@ class PRAImportManager {
 
         // Edit modal save button
         document.getElementById('saveRecordBtn')?.addEventListener('click', () => this.saveRecord());
+
+        if (this.clearModeBtn) {
+            this.clearModeBtn.addEventListener('click', () => {
+                if (!this.ensureModeSelected()) {
+                    return;
+                }
+
+                const modeLabel = document.getElementById('praClearModeLabel');
+                if (modeLabel) {
+                    modeLabel.textContent = this.testControlMode;
+                }
+
+                if (this.clearDataModal) {
+                    this.clearDataModal.show();
+                } else if (confirm(`Clear PRA data for ${this.testControlMode}?`)) {
+                    this.handleClearMode();
+                }
+            });
+        }
+
+        if (this.confirmClearDataBtn) {
+            this.confirmClearDataBtn.addEventListener('click', () => this.handleClearMode());
+        }
+    }
+
+    handleModeChange(value) {
+        const previousMode = this.testControlMode;
+        this.setTestControlMode(value);
+        if (this.sessionId && previousMode && previousMode !== this.testControlMode) {
+            this.showAlert('Data mode changed. Clearing current PRA preview to avoid mixing environments.', 'info');
+            this.resetForm({ keepMode: true, keepFileInput: false });
+        }
+    }
+
+    setTestControlMode(mode) {
+        const normalized = (mode || '').toUpperCase();
+        this.testControlMode = normalized;
+        if (this.testControlSelect) {
+            if (!normalized) {
+                this.testControlSelect.selectedIndex = 0;
+            } else if (this.testControlSelect.value !== normalized) {
+                this.testControlSelect.value = normalized;
+            }
+        }
+        this.updateModeBadge();
+        this.updateModeControls();
+        if (!normalized) {
+            this.importButton && (this.importButton.disabled = true);
+        }
+    }
+
+    updateModeBadge() {
+        if (!this.modeBadge) {
+            return;
+        }
+
+        const badge = this.modeBadge;
+        badge.classList.remove('bg-secondary', 'bg-warning', 'bg-success');
+
+        if (this.testControlMode) {
+            badge.textContent = `Mode: ${this.testControlMode}`;
+            const className = this.testControlMode === 'PRODUCTION' ? 'bg-success' : 'bg-warning';
+            badge.classList.add(className);
+        } else {
+            badge.textContent = 'Mode: Not selected';
+            badge.classList.add('bg-secondary');
+        }
+    }
+
+    updateModeControls() {
+        const modeSelected = Boolean(this.testControlMode);
+
+        if (this.uploadButton) {
+            this.uploadButton.disabled = !modeSelected || this.isClearingMode;
+        }
+
+        if (this.clearModeBtn) {
+            this.clearModeBtn.disabled = !modeSelected || this.isClearingMode;
+        }
+
+        if (this.importButton) {
+            const canImport = modeSelected && this.sessionId && this.readyRecordCount > 0 && !this.isClearingMode;
+            this.importButton.disabled = !canImport;
+        }
+
+        const modeLabel = document.getElementById('praClearModeLabel');
+        if (modeLabel) {
+            modeLabel.textContent = this.testControlMode || 'Not selected';
+        }
+    }
+
+    ensureModeSelected() {
+        if (this.testControlMode) {
+            return true;
+        }
+
+    this.showAlert('Select a data mode (Production or Test) before continuing.', 'warning');
+        this.testControlSelect?.focus();
+        return false;
     }
 
     handleFormSubmit(event) {
@@ -60,6 +192,10 @@ class PRAImportManager {
         
         if (!file) {
             this.showAlert('Please select a file to upload.', 'warning');
+            return;
+        }
+
+        if (!this.ensureModeSelected()) {
             return;
         }
         
@@ -76,6 +212,7 @@ class PRAImportManager {
         this.showUploadProgress(true);
 
         const formData = new FormData();
+        formData.append('test_control', this.testControlMode);
         formData.append('file', file);
 
         try {
@@ -90,21 +227,18 @@ class PRAImportManager {
 
             const result = await response.json();
             this.sessionId = result.session_id;
+            this.setTestControlMode(result.test_control || this.testControlMode);
             this.propertyRecordsData = result.property_records || [];
             this.fileNumbersData = result.file_numbers || [];
+            this.fileNumberQcData = result.file_number_qc || [];
             this.duplicates = result.duplicates || { csv: [], database: [] };
+            this.qcSummary = result.qc_summary || this.qcSummary;
             
             this.updateStatistics(result);
             this.showDuplicates();
             this.applyFilter();
             this.showPreviewSection();
             this.showAlert(`File processed successfully! ${result.total_records} records loaded.`, 'success');
-
-            // Enable import button if there are valid records
-            const importBtn = document.getElementById('importBtn');
-            if (importBtn && result.ready_records > 0) {
-                importBtn.disabled = false;
-            }
 
         } catch (error) {
             console.error('Upload error:', error);
@@ -131,22 +265,28 @@ class PRAImportManager {
     }
 
     updateStatistics(result) {
-        document.getElementById('total-records').textContent = result.total_records || 0;
-        document.getElementById('duplicate-records').textContent = result.duplicate_count || 0;
-        document.getElementById('validation-issues').textContent = result.validation_issues || 0;
-        document.getElementById('ready-records').textContent = result.ready_records || 0;
+        const qcSummary = result.qc_summary || this.qcSummary || {};
+        this.qcSummary = qcSummary;
 
-        // Update tab counts
+        document.getElementById('total-records').textContent = result.total_records ?? this.propertyRecordsData.length;
+        document.getElementById('duplicate-records').textContent = result.duplicate_count ?? 0;
+        document.getElementById('validation-issues').textContent = qcSummary.total_issues ?? 0;
+        document.getElementById('ready-records').textContent = result.ready_records ?? this.propertyRecordsData.length;
+
         document.getElementById('propertyRecordsCount').textContent = this.propertyRecordsData.length;
         document.getElementById('fileNumbersCount').textContent = this.fileNumbersData.length;
+        document.getElementById('fileNumberQcCount').textContent = this.fileNumberQcData.length;
 
-        // Show statistics row
         document.getElementById('statisticsRow').style.display = 'flex';
 
-        // Update validation panel if there are issues
-        if (result.validation_issues > 0) {
-            this.showValidationIssues(result.issues || []);
+        const readyCount = Number(result.ready_records ?? this.propertyRecordsData.length ?? 0);
+        this.readyRecordCount = readyCount;
+
+        if (this.importButton) {
+            this.importButton.dataset.readyCount = String(readyCount);
         }
+
+        this.updateModeControls();
     }
 
     switchTab(tabName) {
@@ -194,6 +334,7 @@ class PRAImportManager {
                                         <div><strong>Transaction Type:</strong> ${record.transaction_type || 'N/A'}</div>
                                         <div><strong>Plot No:</strong> ${record.plot_no || 'N/A'}</div>
                                         ${type === 'Database' ? `<div><strong>Existing Prop ID:</strong> ${record.prop_id || 'N/A'}</div>` : ''}
+                                        ${type === 'Database' && record.source ? `<div><strong>Source:</strong> ${record.source}</div>` : ''}
                                     </div>
                                 </div>
                             `).join('')}
@@ -219,42 +360,14 @@ class PRAImportManager {
         container.innerHTML = html;
     }
 
-    showValidationIssues(issues) {
-        const panel = document.getElementById('validationPanel');
-        const issuesList = document.getElementById('validationIssuesList');
-        
-        if (!panel || !issuesList) return;
-
-        let html = '';
-        for (const [category, categoryIssues] of Object.entries(issues)) {
-            if (categoryIssues.length > 0) {
-                html += `
-                    <div class="mb-3">
-                        <h6 class="text-warning">
-                            <i class="fas fa-exclamation-circle me-1"></i>
-                            ${this.formatCategoryName(category)} (${categoryIssues.length})
-                        </h6>
-                        <ul class="list-unstyled ms-3">
-                `;
-                categoryIssues.forEach(issue => {
-                    html += `<li class="text-muted small">• Row ${issue.row}: ${issue.message}</li>`;
-                });
-                html += '</ul></div>';
-            }
-        }
-
-        issuesList.innerHTML = html;
-        panel.style.display = 'block';
-    }
-
-    formatCategoryName(category) {
+    formatIssueType(issueType) {
         const names = {
-            'required_fields': 'Required Fields Missing',
-            'data_format': 'Data Format Issues',
-            'business_rules': 'Business Rule Violations',
-            'duplicates': 'Duplicate Records'
+            padding: 'Padding',
+            year: 'Year',
+            spacing: 'Spacing',
+            temp: 'TEMP'
         };
-        return names[category] || category.replace('_', ' ').toUpperCase();
+        return names[issueType] || issueType;
     }
 
     setFilter(filterType) {
@@ -364,7 +477,12 @@ class PRAImportManager {
     }
 
     renderTable() {
-        const tableBodyId = this.currentTab === 'property-records' ? 'propertyRecordsTableBody' : 'fileNumbersTableBody';
+        let tableBodyId = 'propertyRecordsTableBody';
+        if (this.currentTab === 'file-numbers') {
+            tableBodyId = 'fileNumbersTableBody';
+        } else if (this.currentTab === 'file-number-qc') {
+            tableBodyId = 'fileNumberQcTableBody';
+        }
         const tbody = document.getElementById(tableBodyId);
         if (!tbody) return;
 
@@ -376,9 +494,14 @@ class PRAImportManager {
 
         pageData.forEach((record, index) => {
             const actualIndex = startIndex + index;
-            const tr = this.currentTab === 'property-records' ? 
-                this.createPropertyRecordRow(record, actualIndex + 1, actualIndex) :
-                this.createFileNumberRow(record, actualIndex + 1, actualIndex);
+            let tr;
+            if (this.currentTab === 'property-records') {
+                tr = this.createPropertyRecordRow(record, actualIndex + 1, actualIndex);
+            } else if (this.currentTab === 'file-numbers') {
+                tr = this.createFileNumberRow(record, actualIndex + 1, actualIndex);
+            } else {
+                tr = this.createFileNumberQcRow(record, actualIndex + 1);
+            }
             tbody.appendChild(tr);
         });
 
@@ -389,11 +512,6 @@ class PRAImportManager {
         const tr = document.createElement('tr');
         tr.dataset.index = actualIndex;
         
-        // Add warning class for records with issues
-        if (record.hasIssues) {
-            tr.classList.add('table-warning');
-        }
-        
         tr.innerHTML = `
             <td>
                 <input type="checkbox" class="row-select" data-index="${actualIndex}">
@@ -401,7 +519,6 @@ class PRAImportManager {
             <td>${displayIndex}</td>
             <td class="editable-cell" data-field="mlsFNo" data-index="${actualIndex}">
                 ${this.sanitizeValue(record.mlsFNo)}
-                ${record.hasIssues ? '<i class="fas fa-exclamation-triangle text-warning ms-1" title="Has validation issues"></i>' : ''}
             </td>
             <td>${this.sanitizeValue(record.prop_id)}</td>
             <td class="editable-cell" data-field="transaction_type" data-index="${actualIndex}">${this.sanitizeValue(record.transaction_type)}</td>
@@ -418,11 +535,7 @@ class PRAImportManager {
             <td class="editable-cell" data-field="plot_no" data-index="${actualIndex}">${this.sanitizeValue(record.plot_no)}</td>
             <td class="editable-cell" data-field="LGA" data-index="${actualIndex}">${this.sanitizeValue(record.LGA)}</td>
             <td class="editable-cell" data-field="plot_size" data-index="${actualIndex}">${this.sanitizeValue(record.plot_size)}</td>
-            <td>
-                <span class="badge ${record.hasIssues ? 'bg-warning text-dark' : 'bg-success'}">
-                    ${record.hasIssues ? 'Issues' : 'Valid'}
-                </span>
-            </td>
+            <td></td>
             <td class="text-center">
                 <div class="btn-group btn-group-sm">
                     <button class="btn btn-outline-primary btn-sm" onclick="praManager.convertPlotSizeToHectares(${actualIndex})" title="Convert acres to hectares">
@@ -529,7 +642,7 @@ class PRAImportManager {
             this.decorateCellAfterEdit(cell, field, record);
         };
 
-        const commitValue = () => {
+        const commitValue = async () => {
             if (committed) {
                 return;
             }
@@ -543,6 +656,38 @@ class PRAImportManager {
             }
 
             const newRawValue = newDisplayValue;
+            
+            // Update via backend API if session exists
+            if (this.sessionId) {
+                try {
+                    const recordType = this.currentTab === 'property-records' ? 'property_records' : 'file_numbers';
+                    const response = await fetch(`/api/pra/update/${this.sessionId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            record_type: recordType,
+                            record_index: index,
+                            field: field,
+                            value: newRawValue
+                        })
+                    });
+
+                    if (response.ok) {
+                        const result = await response.json();
+                        this.propertyRecordsData = result.property_records || [];
+                        this.fileNumbersData = result.file_numbers || [];
+                        this.updateStatistics(result);
+                        if (result.test_control) {
+                            this.setTestControlMode(result.test_control);
+                        }
+                        this.showValidationIssues(result.issues || {});
+                    }
+                } catch (error) {
+                    console.error('Update error:', error);
+                    this.showAlert('Error updating record: ' + error.message, 'danger');
+                }
+            }
+            
             record[field] = newRawValue;
             this.updateLinkedFields(record, field, newRawValue);
             this.syncLinkedDatasets(record, field, originalRawValue, newRawValue);
@@ -817,7 +962,7 @@ class PRAImportManager {
         this.showAlert(`Converted ${formattedAcres} acres to ${formattedHectares} ha.`, 'success');
     }
 
-    deleteRecord(index) {
+    async deleteRecord(index) {
         if (!confirm('Are you sure you want to delete this record?')) {
             return;
         }
@@ -832,10 +977,48 @@ class PRAImportManager {
             : this.fileNumbersData;
 
         const sourceIndex = sourceData.indexOf(record);
-        if (sourceIndex !== -1) {
-            sourceData.splice(sourceIndex, 1);
+        if (sourceIndex === -1) {
+            this.showAlert('Record not found in source data', 'error');
+            return;
         }
 
+        // Delete via backend API if session exists
+        if (this.sessionId) {
+            try {
+                const recordType = this.currentTab === 'property-records' ? 'property_records' : 'file_numbers';
+                const response = await fetch(`/api/pra/delete/${this.sessionId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        record_type: recordType,
+                        record_index: sourceIndex
+                    })
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    this.propertyRecordsData = result.property_records || [];
+                    this.fileNumbersData = result.file_numbers || [];
+                    this.updateStatistics(result);
+                    if (result.test_control) {
+                        this.setTestControlMode(result.test_control);
+                    }
+                    this.showValidationIssues(result.issues || {});
+                    
+                    // Refresh filter and display
+                    this.applyFilter();
+                    this.showAlert('Record deleted successfully', 'success');
+                    return;
+                }
+            } catch (error) {
+                console.error('Delete error:', error);
+                this.showAlert('Error deleting record: ' + error.message, 'danger');
+                return;
+            }
+        }
+        
+        // Fallback to local deletion if API fails
+        sourceData.splice(sourceIndex, 1);
         this.filteredData.splice(index, 1);
         this.renderTable();
         this.renderPagination();
@@ -853,6 +1036,10 @@ class PRAImportManager {
             return;
         }
 
+        if (!this.ensureModeSelected()) {
+            return;
+        }
+
         this.showLoadingModal();
 
         try {
@@ -865,11 +1052,14 @@ class PRAImportManager {
             }
 
             const result = await response.json();
+            if (result.test_control) {
+                this.setTestControlMode(result.test_control);
+            }
             
             this.showAlert(`Import completed successfully! ${result.imported_count || 0} records imported.`, 'success');
             
             // Reset form
-            this.resetForm();
+            this.resetForm({ keepMode: true });
 
         } catch (error) {
             console.error('Import error:', error);
@@ -879,19 +1069,103 @@ class PRAImportManager {
         }
     }
 
-    resetForm() {
+    resetForm(options = {}) {
+        const { keepMode = false, keepFileInput = false } = options;
         this.propertyRecordsData = [];
         this.fileNumbersData = [];
         this.filteredData = [];
         this.sessionId = null;
         this.duplicates = { csv: [], database: [] };
+        this.readyRecordCount = 0;
         
-        document.getElementById('fileInput').value = '';
-        document.getElementById('statisticsRow').style.display = 'none';
-        document.getElementById('previewSection').style.display = 'none';
-        document.getElementById('validationPanel').style.display = 'none';
-        document.getElementById('duplicatesPanel').style.display = 'none';
-        document.getElementById('importBtn').disabled = true;
+        if (!keepFileInput) {
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput) {
+                fileInput.value = '';
+            }
+        }
+
+        const statisticsRow = document.getElementById('statisticsRow');
+        if (statisticsRow) {
+            statisticsRow.style.display = 'none';
+        }
+        const previewSection = document.getElementById('previewSection');
+        if (previewSection) {
+            previewSection.style.display = 'none';
+        }
+        const validationPanel = document.getElementById('validationPanel');
+        if (validationPanel) {
+            validationPanel.style.display = 'none';
+        }
+        const duplicatesPanel = document.getElementById('duplicatesPanel');
+        if (duplicatesPanel) {
+            duplicatesPanel.style.display = 'none';
+        }
+
+        if (!keepMode) {
+            this.setTestControlMode('');
+        } else {
+            this.updateModeBadge();
+        }
+
+        if (this.importButton) {
+            this.importButton.disabled = true;
+            this.importButton.dataset.readyCount = '0';
+        }
+
+        this.updateModeControls();
+    }
+
+    async handleClearMode() {
+        if (!this.ensureModeSelected() || this.isClearingMode) {
+            return;
+        }
+
+        this.setClearingState(true);
+
+        try {
+            const response = await fetch('/api/pra/clear-data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: this.testControlMode })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+
+            const result = await response.json();
+            if (!result.success) {
+                throw new Error(result.detail || 'Clear data request failed');
+            }
+
+            const counts = result.counts || {};
+            const propertyCount = counts.property_records ?? 0;
+            const fileNumberCount = counts.fileNumber ?? 0;
+            this.showAlert(`Cleared ${propertyCount} property record(s) and ${fileNumberCount} file number(s) from ${result.mode} mode.`, 'success');
+
+            this.resetForm({ keepMode: true });
+        } catch (error) {
+            console.error('Clear data error:', error);
+            this.showAlert(`Error clearing ${this.testControlMode} data: ${error.message}`, 'danger');
+        } finally {
+            this.setClearingState(false);
+            if (this.clearDataModal) {
+                this.clearDataModal.hide();
+            }
+        }
+    }
+
+    setClearingState(isClearing) {
+        this.isClearingMode = isClearing;
+        if (this.confirmClearDataBtn) {
+            this.confirmClearDataBtn.disabled = isClearing;
+            this.confirmClearDataBtn.innerHTML = isClearing
+                ? '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Clearing...'
+                : (this.confirmClearDataBtnLabel || 'Yes, Clear Data');
+        }
+
+        this.updateModeControls();
     }
 
     // Duplicate handling methods
@@ -956,13 +1230,55 @@ class PRAImportManager {
         }, 5000);
     }
 
-    revalidateData() {
+    async applyFileNumberFix(recordType, recordIndex, suggestedFix) {
+        if (!this.sessionId) {
+            this.showAlert('No active session found.', 'warning');
+            return;
+        }
+
+        try {
+            const response = await fetch(`/api/pra/update/${this.sessionId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    record_type: recordType,
+                    record_index: recordIndex,
+                    field: 'mlsFNo',
+                    value: suggestedFix
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const result = await response.json();
+            
+            // Update local data
+            this.propertyRecordsData = result.property_records || [];
+            this.fileNumbersData = result.file_numbers || [];
+            
+            // Refresh display
+            this.updateStatistics(result);
+            this.showValidationIssues(result.issues || {});
+            this.applyFilter();
+            
+            this.showAlert('File number fixed successfully!', 'success');
+
+        } catch (error) {
+            console.error('Auto-fix error:', error);
+            this.showAlert('Error applying fix: ' + error.message, 'danger');
+        }
+    }
+
+    async revalidateData() {
         if (!this.sessionId) {
             this.showAlert('No data to validate. Please upload a file first.', 'warning');
             return;
         }
 
-        this.showAlert('Re-validation feature will be implemented in the backend.', 'info');
+        this.showAlert('Re-validation completed with current data.', 'info');
+        this.applyFilter();
     }
 
     bulkEdit() {

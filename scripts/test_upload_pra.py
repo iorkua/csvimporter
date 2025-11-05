@@ -9,7 +9,11 @@ if not DATA_FILE.exists():
     raise SystemExit(f"CSV file not found: {DATA_FILE}")
 
 with DATA_FILE.open("rb") as fh:
-    response = requests.post(f"{BASE_URL}/api/upload-pra", files={"file": fh})
+    response = requests.post(
+        f"{BASE_URL}/api/upload-pra",
+        data={"test_control": "TEST"},
+        files={"file": fh}
+    )
 
 print("Status:", response.status_code)
 try:
