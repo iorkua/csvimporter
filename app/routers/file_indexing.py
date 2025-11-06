@@ -1,11 +1,12 @@
 """API router for File Indexing workflows."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import io
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -35,6 +36,8 @@ from app.services.file_indexing_service import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+GROUPING_PREVIEW_MAX_RECORDS = 5000
+
 
 class QCFixPayload(BaseModel):
     record_index: int
@@ -47,6 +50,117 @@ class QCFixRequest(BaseModel):
 
 class ClearDataRequest(BaseModel):
     mode: str
+
+
+def _read_csv_stream(data: bytes, encoding: str) -> pd.DataFrame:
+    return pd.read_csv(
+        io.BytesIO(data),
+        encoding=encoding,
+        na_values=['', 'NULL', 'null', 'NaN'],
+        keep_default_na=False
+    )
+
+
+def _read_excel_stream(data: bytes) -> pd.DataFrame:
+    return pd.read_excel(
+        io.BytesIO(data),
+        na_values=['', 'NULL', 'null', 'NaN'],
+        keep_default_na=False
+    )
+
+
+def _prepare_file_indexing_preview_payload(
+    dataframe: pd.DataFrame,
+    filename: str,
+    test_control_value: str
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    start_time = datetime.utcnow()
+    logger.info("Starting preview payload build for %s (%d rows)", filename, len(dataframe))
+    processed_df = process_file_indexing_data(dataframe)
+    records = processed_df.to_dict('records')
+    multiple_occurrences = analyze_file_number_occurrences(processed_df)
+    logger.info("Post-processed dataframe for %s in %.3fs", filename, (datetime.utcnow() - start_time).total_seconds())
+    
+    # Skip grouping preview for large datasets to improve performance
+    # Only build grouping preview for smaller uploads (< 1000 records)
+    record_count = len(records)
+
+    if record_count <= GROUPING_PREVIEW_MAX_RECORDS:
+        grouping_start = datetime.utcnow()
+        grouping_preview = _build_grouping_preview(records)
+        logger.info("Grouping preview built in %.3fs", (datetime.utcnow() - grouping_start).total_seconds())
+    else:
+        grouping_preview = {
+            'rows': [],
+            'summary': {'matched': 0, 'missing': 0, 'skipped': record_count},
+            'note': (
+                'Grouping preview skipped because this upload contains '
+                f'{record_count} records. Preview is available for up to '
+                f'{GROUPING_PREVIEW_MAX_RECORDS:,} records and will run automatically '
+                'during import.'
+            )
+        }
+
+    # For large datasets, skip intensive QC processing during preview
+    if record_count < 2000:
+        qc_start = datetime.utcnow()
+        qc_issues = _run_qc_validation(records)
+        logger.info("QC validation completed in %.3fs", (datetime.utcnow() - qc_start).total_seconds())
+    else:
+        qc_issues = {
+            'padding': [],
+            'year': [],
+            'spacing': [],
+            'temp': [],
+            'note': f'QC validation skipped for large dataset ({len(records)} records). QC will run during import.'
+        }
+        
+    prop_start = datetime.utcnow()
+    property_id_assignments = _assign_property_ids(records)
+    logger.info("Property ID assignment completed in %.3fs", (datetime.utcnow() - prop_start).total_seconds())
+
+    session_payload = {
+        "filename": filename,
+        "upload_time": datetime.now(),
+        "data": records,
+        "multiple_occurrences": multiple_occurrences,
+        "total_records": len(records),
+        "grouping_preview": grouping_preview,
+        "qc_issues": qc_issues,
+        "property_assignments": property_id_assignments,
+        "test_control": test_control_value
+    }
+
+    qc_summary = {
+        "total_issues": sum(len(issues) for issues in qc_issues.values()),
+        "padding_issues": len(qc_issues.get('padding', [])),
+        "year_issues": len(qc_issues.get('year', [])),
+        "spacing_issues": len(qc_issues.get('spacing', [])),
+        "temp_issues": len(qc_issues.get('temp', []))
+    }
+
+    property_id_summary = {
+        "new_assignments": len([p for p in property_id_assignments if p['status'] == 'new']),
+        "existing_found": len([p for p in property_id_assignments if p['status'] == 'existing'])
+    }
+
+    response_payload = {
+        "filename": filename,
+        "total_records": len(records),
+        "multiple_occurrences_count": len(multiple_occurrences),
+        "grouping_preview": grouping_preview,
+        "qc_summary": qc_summary,
+        "property_id_summary": property_id_summary,
+        "test_control": test_control_value
+    }
+
+    logger.info(
+        "Preview payload completed for %s in %.3fs",
+        filename,
+        (datetime.utcnow() - start_time).total_seconds()
+    )
+
+    return session_payload, response_payload
 
 
 @router.post("/api/upload-csv")
@@ -71,11 +185,10 @@ async def upload_csv(
             last_error: Exception | None = None
             for encoding in ['utf-8', 'latin-1', 'cp1252']:
                 try:
-                    dataframe = pd.read_csv(
-                        io.BytesIO(content),
-                        encoding=encoding,
-                        na_values=['', 'NULL', 'null', 'NaN'],
-                        keep_default_na=False
+                    dataframe = await asyncio.to_thread(
+                        _read_csv_stream,
+                        content,
+                        encoding
                     )
                     break
                 except UnicodeDecodeError as exc:
@@ -83,52 +196,23 @@ async def upload_csv(
             if dataframe is None:
                 raise HTTPException(status_code=400, detail=f"Unable to decode CSV file with available encodings: {last_error}")
         else:
-            dataframe = pd.read_excel(
-                io.BytesIO(content),
-                na_values=['', 'NULL', 'null', 'NaN'],
-                keep_default_na=False
-            )
+            dataframe = await asyncio.to_thread(_read_excel_stream, content)
 
-        processed_df = process_file_indexing_data(dataframe)
-        records = processed_df.to_dict('records')
-        multiple_occurrences = analyze_file_number_occurrences(processed_df)
-        grouping_preview = _build_grouping_preview(records)
+        session_payload, response_payload = await asyncio.to_thread(
+            _prepare_file_indexing_preview_payload,
+            dataframe,
+            file.filename,
+            test_control_value
+        )
 
-        qc_issues = _run_qc_validation(records)
-        property_id_assignments = _assign_property_ids(records)
+        session_manager.set_session(session_id, session_payload)
 
-        session_manager.set_session(session_id, {
-            "filename": file.filename,
-            "upload_time": datetime.now(),
-            "data": records,
-            "multiple_occurrences": multiple_occurrences,
-            "total_records": len(records),
-            "grouping_preview": grouping_preview,
-            "qc_issues": qc_issues,
-            "property_assignments": property_id_assignments,
-            "test_control": test_control_value
+        response_payload.update({
+            "session_id": session_id,
+            "redirect_url": f"/file-indexing?session_id={session_id}"
         })
 
-        return {
-            "session_id": session_id,
-            "filename": file.filename,
-            "total_records": len(records),
-            "multiple_occurrences_count": len(multiple_occurrences),
-            "redirect_url": f"/file-indexing?session_id={session_id}",
-            "grouping_preview": grouping_preview,
-            "qc_summary": {
-                "total_issues": sum(len(issues) for issues in qc_issues.values()),
-                "padding_issues": len(qc_issues.get('padding', [])),
-                "year_issues": len(qc_issues.get('year', [])),
-                "spacing_issues": len(qc_issues.get('spacing', [])),
-                "temp_issues": len(qc_issues.get('temp', []))
-            },
-            "property_id_summary": {
-                "new_assignments": len([p for p in property_id_assignments if p['status'] == 'new']),
-                "existing_found": len([p for p in property_id_assignments if p['status'] == 'existing'])
-            },
-            "test_control": test_control_value
-        }
+        return response_payload
 
     except HTTPException:
         raise
@@ -154,8 +238,72 @@ async def get_preview_data(session_id: str):
 
 @router.post("/api/import-file-indexing/{session_id}")
 async def import_file_indexing(session_id: str):
-    """Import file indexing data to database."""
+    """Start file indexing import as a background task."""
     session_data = session_manager.require_session(session_id)
+    
+    # Initialize progress tracking
+    progress_key = f"import_progress_{session_id}"
+    session_manager.set_session(progress_key, {
+        "status": "starting",
+        "progress": 0,
+        "total": len(session_data["data"]),
+        "current_batch": 0,
+        "message": "Starting import...",
+        "start_time": datetime.utcnow().isoformat()
+    })
+    
+    # Start background task
+    asyncio.create_task(_background_import_task(session_data, session_id, progress_key))
+    
+    return {
+        "success": True,
+        "message": "Import started in background",
+        "progress_url": f"/api/import-progress/{session_id}",
+        "session_id": session_id
+    }
+
+
+async def _background_import_task(session_data: Dict[str, Any], session_id: str, progress_key: str):
+    """Run import in background and update progress."""
+    try:
+        result = await asyncio.to_thread(_process_import_data, session_data, progress_key)
+        
+        # Update final progress
+        session_manager.set_session(progress_key, {
+            "status": "completed",
+            "progress": 100,
+            "total": len(session_data["data"]),
+            "message": "Import completed successfully!",
+            "result": result,
+            "end_time": datetime.utcnow().isoformat()
+        })
+        
+        session_manager.delete_session(session_id)
+        
+    except Exception as exc:
+        logger.error("Background import failed for session %s: %s", session_id, exc)
+        session_manager.set_session(progress_key, {
+            "status": "error",
+            "progress": 0,
+            "message": f"Import failed: {str(exc)}",
+            "error": str(exc),
+            "end_time": datetime.utcnow().isoformat()
+        })
+
+
+@router.get("/api/import-progress/{session_id}")
+async def get_import_progress(session_id: str):
+    """Get current import progress."""
+    progress_key = f"import_progress_{session_id}"
+    try:
+        progress_data = session_manager.require_session(progress_key)
+        return progress_data
+    except:
+        return {"status": "not_found", "message": "Import progress not found"}
+
+
+def _process_import_data(session_data: Dict[str, Any], progress_key: str = None) -> Dict[str, Any]:
+    """Process import data in a separate thread to avoid blocking."""
     db = SessionLocal()
     imported_count = 0
     cofo_count = 0
@@ -166,8 +314,28 @@ async def import_file_indexing(session_id: str):
     source_filename = session_data.get('filename', '')
     test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
 
+    def update_progress(current: int, total: int, message: str, batch_num: int = 0):
+        if progress_key:
+            try:
+                session_manager.set_session(progress_key, {
+                    "status": "processing",
+                    "progress": round((current / total) * 100, 1),
+                    "current": current,
+                    "total": total,
+                    "current_batch": batch_num,
+                    "message": message
+                })
+            except:
+                pass  # Don't fail import if progress update fails
+
     try:
-        for record in session_data["data"]:
+        # Process records in batches to avoid timeouts
+        batch_size = 50
+        total_records = len(session_data["data"])
+        
+        update_progress(0, total_records, "Starting import...", 0)
+        
+        for i, record in enumerate(session_data["data"]):
             file_number = record.get('file_number', '').strip()
             if not file_number:
                 continue
@@ -298,15 +466,26 @@ async def import_file_indexing(session_id: str):
             _upsert_file_number(db, file_number, record, tracking_id, source_filename, now, test_control)
             file_number_count += 1
 
+            # Update progress for each individual record
+            progress_msg = f"Processing record {i + 1} of {total_records}"
+            update_progress(i + 1, total_records, progress_msg, 0)
+            
+            # Commit in batches to avoid timeouts
+            if (i + 1) % batch_size == 0 or (i + 1) == total_records:
+                batch_num = ((i + 1) // batch_size) + (1 if (i + 1) % batch_size > 0 else 0)
+                batch_start = max(1, i + 2 - batch_size)
+                logger.info("Committing batch %d-%d of %d records", 
+                           batch_start, i + 1, total_records)
+                db.commit()
+
+        # Final commit (may be redundant but ensures everything is saved)
         db.commit()
 
     except Exception as exc:  # pragma: no cover - database safeguard
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(exc)}")
+        raise exc  # Re-raise as regular exception, not HTTPException
     finally:
         db.close()
-
-    session_manager.delete_session(session_id)
 
     return {
         "success": True,

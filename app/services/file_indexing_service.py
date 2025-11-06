@@ -5,11 +5,15 @@ importable by routers and other modules.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import numbers
 import re
 import uuid
+import warnings
+import time
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import pandas as pd
@@ -21,6 +25,10 @@ from app.models.database import CofO, FileIndexing, FileNumber, Grouping, Sessio
 TRACKING_ID_PREFIX = 'TRK'
 
 logger = logging.getLogger(__name__)
+
+_COFO_DATE_WARNING_CACHE: Set[str] = set()
+_MAX_COFO_DATE_WARNINGS = 25
+_COFO_DATE_CAP_LOGGED = False
 
 
 def _format_value(value, numeric: bool = False):
@@ -167,20 +175,133 @@ def _normalize_file_number_for_match(value: Any) -> Optional[str]:
     return normalized if normalized else None
 
 
+@lru_cache(maxsize=2048)
+def _parse_cofo_date_value(normalized: str) -> Optional[str]:
+    if not normalized:
+        return None
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', UserWarning)
+        for day_first in (True, False):
+            parsed = pd.to_datetime(normalized, errors='coerce', dayfirst=day_first)
+            if not pd.isna(parsed):
+                return parsed.strftime('%d-%m-%Y')
+    return None
+
+
+def _record_cofo_date_warning(value: str) -> None:
+    global _COFO_DATE_CAP_LOGGED
+
+    if not value:
+        return
+
+    if value in _COFO_DATE_WARNING_CACHE:
+        return
+
+    if len(_COFO_DATE_WARNING_CACHE) >= _MAX_COFO_DATE_WARNINGS:
+        if not _COFO_DATE_CAP_LOGGED:
+            logger.warning(
+                "Additional cofo_date parse warnings suppressed after %s unique values",
+                _MAX_COFO_DATE_WARNINGS
+            )
+            _COFO_DATE_CAP_LOGGED = True
+        return
+
+    _COFO_DATE_WARNING_CACHE.add(value)
+    logger.debug("Unable to parse cofo_date '%s'", value)
+
+    if len(_COFO_DATE_WARNING_CACHE) >= _MAX_COFO_DATE_WARNINGS and not _COFO_DATE_CAP_LOGGED:
+        logger.debug(
+            "Additional cofo_date parse warnings suppressed after %s unique values",
+            _MAX_COFO_DATE_WARNINGS
+        )
+        _COFO_DATE_CAP_LOGGED = True
+
+
+def _coerce_cofo_date_components(parts: List[str]) -> Optional[str]:
+    if len(parts) != 3:
+        return None
+
+    cleaned: List[Optional[int]] = []
+    for part in parts:
+        digits = re.sub(r'\D', '', part or '')
+        if digits == '':
+            cleaned.append(None)
+            continue
+        cleaned.append(int(digits))
+
+    day, month, year = cleaned
+
+    if year is None:
+        return None
+
+    # Normalize common year entry issues (two-digit years, missing 9 in 1980s, etc.)
+    if year < 100:
+        year += 2000 if year < 30 else 1900
+    elif 100 <= year <= 999:
+        year += 1900
+    elif 1000 <= year <= 1099:
+        year += 900
+
+    if month is None or month == 0:
+        return None
+
+    if not 1 <= month <= 12:
+        return None
+
+    if day is None or day == 0:
+        return None
+
+    day = max(1, min(31, day))
+
+    try:
+        last_day = calendar.monthrange(year, month)[1]
+    except calendar.IllegalMonthError:
+        return None
+
+    day = min(day, last_day)
+
+    return f"{day:02d}-{month:02d}-{year:04d}"
+
+
 def _normalize_cofo_date(value: Any) -> Optional[str]:
     normalized = _normalize_string(value)
     if not normalized:
         return None
 
-    normalized = normalized.replace('/', '-').replace('.', '-').replace('\\', '-').strip()
+    original_normalized = normalized.strip()
+    normalized = original_normalized.replace('/', '-').replace('.', '-').replace('\\', '-')
+    normalized = re.sub(r'\s+', '-', normalized)
+    normalized = re.sub(r'-{2,}', '-', normalized).strip('-')
 
-    for day_first in (True, False):
-        parsed = pd.to_datetime(normalized, errors='coerce', dayfirst=day_first)
-        if not pd.isna(parsed):
-            return parsed.strftime('%d-%m-%Y')
+    sanitized = re.sub(r'[^0-9-]', '-', normalized)
+    sanitized = re.sub(r'-{2,}', '-', sanitized).strip('-')
 
-    logger.warning("Unable to parse cofo_date '%s'", normalized)
-    return normalized
+    candidates = []
+    if sanitized:
+        candidates.append(sanitized)
+    if normalized and normalized != sanitized:
+        candidates.append(normalized)
+    if original_normalized and original_normalized not in candidates:
+        candidates.append(original_normalized)
+
+    # Attempt to coerce obvious numeric component issues before parsing
+    numeric_parts = [part for part in (sanitized or '').split('-') if part]
+    coerced_candidate = _coerce_cofo_date_components(numeric_parts)
+    if coerced_candidate:
+        candidates.insert(0, coerced_candidate)
+
+    for candidate in candidates:
+        parsed = _parse_cofo_date_value(candidate)
+        if parsed:
+            return parsed
+
+    digits = re.sub(r'\D', '', sanitized or original_normalized)
+    if len(digits) < 6:
+        return original_normalized
+
+    _record_cofo_date_warning(original_normalized)
+    return original_normalized
 
 
 def _normalize_time_field(value: Any) -> Optional[str]:
@@ -419,7 +540,7 @@ def _grouping_match_info(db, file_number: Optional[str]):
     return None, 'missing', 'Awaiting file number not found in grouping table'
 
 def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Assemble grouping preview data while querying the database in batches."""
+    """Assemble grouping preview data with optimized database queries for large grouping tables."""
     summary = {'matched': 0, 'missing': 0, 'skipped': 0}
     rows: List[Dict[str, Any]] = []
 
@@ -427,18 +548,7 @@ def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     unique_numbers: List[str] = []
     seen_numbers: Set[str] = set()
 
-    suffix_variants = [
-        '',
-        ' AND EXTENSION',
-        ' (TEMP)',
-        ' TEMP',
-        ' (T)',
-        ' AND EXTENSION (TEMP)',
-        ' AND EXTENSION TEMP',
-        ' AND EXTENSION (T)',
-        ' AND EXTENSION T'
-    ]
-
+    # Process input records first
     for record in records:
         standardized = _standardize_file_number(record.get('file_number'))
         standardized_numbers.append(standardized)
@@ -448,25 +558,37 @@ def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     grouping_map: Dict[str, Grouping] = {}
     if unique_numbers:
-        candidate_values: Set[str] = set()
-        for base in unique_numbers:
-            upper_base = base.upper()
-            for suffix in suffix_variants:
-                candidate_values.add(f"{upper_base}{suffix}")
-
         with SessionLocal() as db:
-            for chunk in _chunk_list(list(candidate_values), 500):
+            # Strategy 1: Direct exact matches first (fastest)
+            for chunk in _chunk_list(unique_numbers, 1000):
                 if not chunk:
                     continue
-                matches = (
+                
+                # Try exact matches first
+                exact_matches = (
                     db.query(Grouping)
-                    .filter(func.upper(Grouping.awaiting_fileno).in_(chunk))
+                    .filter(Grouping.awaiting_fileno.in_(chunk))
                     .all()
                 )
-                for grouping_row in matches:
+                for grouping_row in exact_matches:
                     key = _standardize_file_number(grouping_row.awaiting_fileno)
                     if key and key not in grouping_map:
                         grouping_map[key] = grouping_row
+
+                # For unmatched items, try case-insensitive matches
+                matched_keys = set(grouping_map.keys())
+                unmatched = [num for num in chunk if num not in matched_keys]
+                
+                if unmatched:
+                    case_insensitive_matches = (
+                        db.query(Grouping)
+                        .filter(func.upper(Grouping.awaiting_fileno).in_([fn.upper() for fn in unmatched]))
+                        .all()
+                    )
+                    for grouping_row in case_insensitive_matches:
+                        key = _standardize_file_number(grouping_row.awaiting_fileno)
+                        if key and key not in grouping_map:
+                            grouping_map[key] = grouping_row
 
     for index, record in enumerate(records):
         raw_number = record.get('file_number')
@@ -1039,47 +1161,83 @@ def _assign_property_ids(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return property_assignments
 
 
-def _get_next_property_id_counter() -> int:
+@lru_cache(maxsize=1)
+def _log_timing(message: str, start_time: float) -> None:
+    elapsed = time.perf_counter() - start_time
+    logger.info("%s (%.3fs)", message, elapsed)
+
+
+def _fetch_max_numeric_prop_id(db, table_identifier: str, column_name: str = 'prop_id') -> Optional[int]:
+    sql = text(
+        f"""
+            SELECT TOP 1 prop_id_value
+            FROM (
+                SELECT TRY_CAST({column_name} AS BIGINT) AS prop_id_value
+                FROM {table_identifier} WITH (NOLOCK)
+            ) AS numeric_props
+            WHERE prop_id_value IS NOT NULL
+            ORDER BY prop_id_value DESC
+        """
+    )
+    try:
+        value = db.execute(sql).scalar()
+        if value is not None:
+            return int(value)
+    except Exception as exc:
+        logger.debug("Failed to fetch max prop_id from %s: %s", table_identifier, exc)
+    return None
+
+
+def _get_cached_property_id_counter() -> int:
+    """Cache the property ID counter to avoid repeated database queries."""
+    start_time = time.perf_counter()
     db = SessionLocal()
     try:
-        max_prop_id = 0
+        candidates: List[int] = []
 
-        tables_to_check = [
-            (FileIndexing, FileIndexing.prop_id),
-            (CofO, CofO.prop_id),
+        primary_tables = [
+            ('file_indexings', 'prop_id'),
+            ('[CofO]', 'prop_id')
         ]
 
-        try:
-            result = db.execute(text("SELECT MAX(CAST(prop_id AS INT)) FROM property_records WHERE prop_id IS NOT NULL AND ISNUMERIC(prop_id) = 1"))
-            value = result.scalar()
+        for table_name, column_name in primary_tables:
+            value = _fetch_max_numeric_prop_id(db, table_name, column_name)
             if value is not None:
-                max_prop_id = max(max_prop_id, value)
-        except Exception:
-            pass
+                candidates.append(value)
 
-        try:
-            result = db.execute(text("SELECT MAX(CAST(prop_id AS INT)) FROM registered_instruments WHERE prop_id IS NOT NULL AND ISNUMERIC(prop_id) = 1"))
-            value = result.scalar()
+        if candidates:
+            _log_timing("Resolved max prop_id via primary tables", start_time)
+            return max(candidates) + 1
+
+        extended_tables = [
+            ('property_records', 'prop_id'),
+            ('registered_instruments', 'prop_id')
+        ]
+
+        for table_name, column_name in extended_tables:
+            value = _fetch_max_numeric_prop_id(db, table_name, column_name)
             if value is not None:
-                max_prop_id = max(max_prop_id, value)
-        except Exception:
-            pass
+                candidates.append(value)
 
-        for model_class, prop_id_column in tables_to_check:
-            try:
-                max_value = db.query(prop_id_column).order_by(prop_id_column.desc()).first()
-                if max_value and max_value[0] is not None:
-                    try:
-                        numeric_value = int(max_value[0])
-                        max_prop_id = max(max_prop_id, numeric_value)
-                    except (TypeError, ValueError):
-                        continue
-            except Exception:
-                continue
+        if candidates:
+            _log_timing("Resolved max prop_id via extended tables", start_time)
+            return max(candidates) + 1
 
-        return max_prop_id + 1
+        _log_timing("No existing prop_id found; defaulting to 1", start_time)
+        return 1
     finally:
+        _log_timing("Property ID counter resolution complete", start_time)
         db.close()
+
+
+def _get_next_property_id_counter() -> int:
+    """Get the next property ID counter, using cached value for performance."""
+    return _get_cached_property_id_counter()
+
+
+def _clear_property_id_cache() -> None:
+    """Clear the property ID cache to force refresh on next access."""
+    _get_cached_property_id_counter.cache_clear()
 
 
 def _find_existing_property_id(file_number: str) -> Optional[str]:

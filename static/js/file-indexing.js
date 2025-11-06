@@ -251,21 +251,43 @@ class FileIndexingManager {
         // Show progress
         this.showSection('progress-section');
         this.hideSection('upload-section');
+        this.updateProgress('Uploading file...', 'Reading and validating CSV structure', 20);
         
         const formData = new FormData();
         formData.append('file', file);
         formData.append('test_control', testControl);
         
         try {
+            this.updateProgress('Processing data...', 'Analyzing records and checking for duplicates', 40);
+            
             const response = await fetch('/api/upload-csv', {
                 method: 'POST',
                 body: formData
             });
             
             if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.detail || 'Upload failed');
+                let errorDetail = 'Upload failed';
+                const rawBody = await response.text();
+                if (rawBody) {
+                    try {
+                        const parsedError = JSON.parse(rawBody);
+                        errorDetail = parsedError.detail || parsedError.message || errorDetail;
+                    } catch (parseError) {
+                        const fallbackMessage = rawBody.trim();
+                        if (fallbackMessage) {
+                            if (fallbackMessage.startsWith('<')) {
+                                errorDetail = `Upload failed (status ${response.status})`;
+                            } else {
+                                errorDetail = fallbackMessage;
+                            }
+                        }
+                    }
+                }
+
+                throw new Error(errorDetail);
             }
+            
+            this.updateProgress('Processing complete', 'Finalizing preview data', 90);
             
             const result = await response.json();
             this.currentSessionId = result.session_id;
@@ -396,6 +418,17 @@ class FileIndexingManager {
         missingEl.textContent = summary.missing ?? 0;
 
         const rows = Array.isArray(this.groupingPreview?.rows) ? this.groupingPreview.rows : [];
+        const note = typeof this.groupingPreview?.note === 'string' ? this.groupingPreview.note : '';
+
+        if (note) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="text-center text-muted py-4">
+                        ${this.escapeHtml(note)}
+                    </td>
+                </tr>`;
+            return;
+        }
 
         if (!rows.length) {
             tbody.innerHTML = `
@@ -1248,50 +1281,51 @@ class FileIndexingManager {
         const modal = new bootstrap.Modal(document.getElementById('importProgressModal'));
         modal.show();
         
-        // Update progress
-        const progressBar = document.getElementById('importProgressBar');
-        const progressText = document.getElementById('importProgressText');
-        const progressCount = document.getElementById('importProgressCount');
-        
-        progressText.textContent = 'Starting import...';
-        progressCount.textContent = `0 of ${this.currentData.length} records`;
-        
         try {
-            // Simulate progress (in real implementation, this would be actual progress)
-            for (let i = 0; i <= 100; i += 10) {
-                progressBar.style.width = i + '%';
-                progressBar.textContent = i + '%';
-                progressText.textContent = i < 100 ? 'Importing records...' : 'Finalizing import...';
-                await new Promise(resolve => setTimeout(resolve, 200));
-            }
-            
-            // Make actual import request
+            // Start the background import
             const response = await fetch(`/api/import-file-indexing/${this.currentSessionId}`, {
                 method: 'POST'
             });
-            
+
+            const rawBody = await response.text();
+
             if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.detail || 'Import failed');
+                let errorDetail = 'Import failed';
+                if (rawBody) {
+                    try {
+                        const parsedError = JSON.parse(rawBody);
+                        errorDetail = parsedError.detail || parsedError.message || errorDetail;
+                    } catch (parseError) {
+                        const fallbackMessage = rawBody.trim();
+                        if (fallbackMessage) {
+                            errorDetail = fallbackMessage.startsWith('<')
+                                ? `Import failed (status ${response.status})`
+                                : fallbackMessage;
+                        }
+                    }
+                }
+                throw new Error(errorDetail);
             }
-            
-            const result = await response.json();
-            
-            progressText.textContent = 'Import completed successfully!';
-            progressCount.textContent = `${result.imported_count} records imported`;
-            
-            setTimeout(() => {
-                modal.hide();
-                this.showNotification(`Successfully imported ${result.imported_count} file indexing records!`, 'success');
-                
-                // Reset the interface
-                this.resetInterface();
-            }, 2000);
+
+            let startResult = {};
+            if (rawBody) {
+                try {
+                    startResult = JSON.parse(rawBody);
+                } catch (parseSuccessError) {
+                    console.warn('Unexpected import response format:', parseSuccessError);
+                }
+            }
+
+            // Start polling for progress
+            await this.pollImportProgress(modal);
             
         } catch (error) {
             console.error('Import error:', error);
-            progressText.textContent = 'Import failed!';
-            progressBar.classList.add('bg-danger');
+            const progressText = document.getElementById('importProgressText');
+            const progressBar = document.getElementById('importProgressBar');
+            
+            if (progressText) progressText.textContent = 'Import failed!';
+            if (progressBar) progressBar.classList.add('bg-danger');
             
             setTimeout(() => {
                 modal.hide();
@@ -1299,8 +1333,85 @@ class FileIndexingManager {
             }, 2000);
         }
     }
-    
-    resetInterface() {
+
+    async pollImportProgress(modal) {
+        const progressBar = document.getElementById('importProgressBar');
+        const progressText = document.getElementById('importProgressText');
+        const progressCount = document.getElementById('importProgressCount');
+        
+        let pollCount = 0;
+        const maxPolls = 600; // 10 minutes max (600 * 1000ms) - increased for individual record updates
+        
+        const poll = async () => {
+            try {
+                const response = await fetch(`/api/import-progress/${this.currentSessionId}`);
+                const progress = await response.json();
+                
+                if (progress.status === 'not_found') {
+                    throw new Error('Import progress not found');
+                }
+                
+                // Update progress UI
+                const percentage = Math.round(progress.progress || 0);
+                if (progressBar) {
+                    progressBar.style.width = `${percentage}%`;
+                    progressBar.textContent = `${percentage}%`;
+                }
+                
+                if (progressText) {
+                    progressText.textContent = progress.message || 'Processing...';
+                }
+                
+                if (progressCount) {
+                    const current = progress.current || 0;
+                    const total = progress.total || this.currentData.length;
+                    progressCount.textContent = `Record ${current} of ${total}`;
+                }
+                
+                // Check if completed
+                if (progress.status === 'completed') {
+                    const result = progress.result || {};
+                    const importedCount = Number(result.imported_count) || 0;
+                    
+                    if (progressText) progressText.textContent = 'Import completed successfully!';
+                    if (progressCount) progressCount.textContent = `Completed: ${importedCount} of ${this.currentData.length} records`;
+                    
+                    setTimeout(() => {
+                        modal.hide();
+                        this.showNotification(`Successfully imported ${importedCount} file indexing records!`, 'success');
+                        this.resetInterface();
+                    }, 2000);
+                    return;
+                }
+                
+                // Check if failed
+                if (progress.status === 'error') {
+                    throw new Error(progress.error || 'Import failed');
+                }
+                
+                // Continue polling if still processing
+                pollCount++;
+                if (pollCount < maxPolls) {
+                    setTimeout(poll, 1000); // Poll every second
+                } else {
+                    throw new Error('Import timeout - taking too long');
+                }
+                
+            } catch (error) {
+                console.error('Progress polling error:', error);
+                if (progressText) progressText.textContent = 'Import failed!';
+                if (progressBar) progressBar.classList.add('bg-danger');
+                
+                setTimeout(() => {
+                    modal.hide();
+                    this.showNotification(`Import failed: ${error.message}`, 'error');
+                }, 2000);
+            }
+        };
+        
+        // Start polling
+        setTimeout(poll, 500); // Start after 500ms
+    }    resetInterface() {
         // Clear data
         this.currentData = [];
         this.multipleOccurrences = {};
@@ -1372,6 +1483,16 @@ class FileIndexingManager {
         container.style.zIndex = '9999';
         document.body.appendChild(container);
         return container;
+    }
+    
+    updateProgress(title, description, percentage) {
+        const titleEl = document.getElementById('progress-title');
+        const descEl = document.getElementById('progress-description');
+        const barEl = document.getElementById('upload-progress-bar');
+        
+        if (titleEl) titleEl.textContent = title;
+        if (descEl) descEl.textContent = description;
+        if (barEl) barEl.style.width = `${percentage}%`;
     }
 }
 

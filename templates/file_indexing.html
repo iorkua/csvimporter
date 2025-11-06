@@ -182,8 +182,13 @@
                                         <span class="visually-hidden">Loading...</span>
                                     </div>
                                     <div>
-                                        <h6 class="mb-0">Processing CSV file...</h6>
-                                        <small class="text-muted">Please wait while we analyze your data</small>
+                                        <h6 class="mb-0" id="progress-title">Processing CSV file...</h6>
+                                        <small class="text-muted" id="progress-description">Analyzing file structure and preparing preview</small>
+                                    </div>
+                                </div>
+                                <div class="mt-3">
+                                    <div class="progress" style="height: 8px;">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" id="upload-progress-bar" style="width: 0%"></div>
                                     </div>
                                 </div>
                             </div>
@@ -525,6 +530,6 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom JS -->
     <script src="/static/js/main.js"></script>
-    <script src="/static/js/file-indexing.js?v=20251105-1"></script>
+    <script src="/static/js/file-indexing.js?v=20251106-7"></script>
 </body>
 </html>
