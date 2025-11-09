@@ -120,43 +120,6 @@ Identify and correct file numbers containing spaces caused by typographical erro
 
 ---
 
-### **d) Temporary File Number (TEMP) Validation**
-
-#### **Objective**
-
-Standardize the notation for temporary file numbers.
-
-**Valid format:**
-`RES-1981-99 (TEMP)`
-
-**Invalid variants:**
-
-* `RES-1981-99 (T)`
-* `RES-1981-99(T)`
-* `RES-1981-99 TEMP`
-* `RES-1981-99 T`
-
-**Expected correction:**
-All invalid variants → `RES-1981-99 (TEMP)`
-
-#### **System Behavior**
-
-* Identify invalid variants using pattern matching on `(T)`, `(TEMP)`, or “TEMP” without parentheses.
-* Normalize to the proper format: **“(TEMP)”** with a space before the parenthesis.
-
-#### **UI Requirements**
-
-* A “TEMP Validation” tab in the QC dashboard.
-* Display affected records with:
-
-  * File Number
-  * Error Description
-  * Suggested Correction
-  * Action (Auto-Fix, Edit)
-* Provide a confirmation modal for bulk corrections.
-
----
-
 ## ## 2. TRACK, INSERT, AND UPDATE PROPERTY ID (`prop_id`)
 
 ### **a) During Data Import**
@@ -225,8 +188,7 @@ Before generating or assigning a new `prop_id`, cross-check existing records acr
   1. Padding Check
   2. Year Validation
   3. Spacing Errors
-  4. TEMP Validation
-  5. Property ID Mapping
+  4. Property ID Mapping
 
 ### **Common Table Layout**
 

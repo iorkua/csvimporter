@@ -136,8 +136,10 @@ mutating the register-facing `serialNo` field.
 ## 4. File Number Preview Mapping
 
 Each property row now renders a companion entry in the **File Numbers** preview
-tab. The payload mirrors the `fileNumber` table contract while preserving the
-per-row tracking ID so uploads can be correlated later.
+tab. The payload mirrors the historical `fileNumber` table contract while
+preserving the per-row tracking ID so uploads can be correlated later, but the
+records remain preview-only—persistence to the real `fileNumber` table is
+reserved for the File Indexing workflow.
 
 | File Number Key   | Source Column / Rule                           | Notes |
 |-------------------|-----------------------------------------------|-------|
@@ -154,8 +156,9 @@ per-row tracking ID so uploads can be correlated later.
 
 The frontend renders these columns alongside a status badge and a placeholder
 `Delete` column to keep parity with the other preview tables while avoiding
-duplicate delete paths. Note that file number records are not assigned property
-IDs as they serve purely informational purposes in the preview.
+duplicate delete paths. The preview rows are not assigned property IDs and are
+never written to the backend; they exist solely to help reviewers validate data
+before the File Indexing pipeline takes ownership.
 
 ---
 

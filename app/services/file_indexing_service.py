@@ -111,30 +111,8 @@ def _strip_all_whitespace(value: str) -> str:
     return re.sub(r'\s+', '', str(value))
 
 
-def _normalize_temp_suffix_format(value: str) -> str:
-    if not value:
-        return value
-
-    trimmed = str(value).strip()
-
-    temp_patterns = [
-        r'\(T\)\s*$',
-        r'\(TEMP\)\s*$',
-        r'TEMP\s*$',
-        r'T\s*$',
-    ]
-
-    for pattern in temp_patterns:
-        match = re.search(pattern, trimmed, flags=re.IGNORECASE)
-        if match:
-            base = trimmed[:match.start()].rstrip()
-            return f"{base} (TEMP)"
-
-    return trimmed
-
-
 def _remove_file_number_suffixes(value: Any) -> Optional[str]:
-    """Strip trailing suffixes like 'AND EXTENSION' or '(TEMP)' for canonical comparisons."""
+    """Strip trailing suffixes like 'AND EXTENSION' for canonical comparisons."""
     if value is None:
         return None
 
@@ -142,13 +120,9 @@ def _remove_file_number_suffixes(value: Any) -> Optional[str]:
     if not text:
         return None
 
-    # Canonicalize TEMP suffix variations before removal.
-    text = _normalize_temp_suffix_format(text)
-
     suffix_patterns = (
         r'\s+(?:AND\s+EXTENSION)\s*$',
         r'\s*&\s*EXTENSION\s*$',
-        r'\s*\(\s*TEMP\s*\)\s*$',
     )
 
     while True:
@@ -167,7 +141,6 @@ def _normalize_file_number_for_match(value: Any) -> Optional[str]:
     if not normalized:
         return None
 
-    normalized = _normalize_temp_suffix_format(normalized)
     normalized = _remove_file_number_suffixes(normalized) or normalized
     normalized = normalized.upper()
     normalized = re.sub(r'\s+', '', normalized)
@@ -392,7 +365,6 @@ def _standardize_file_number(value: Any) -> Optional[str]:
     normalized = _normalize_string(value)
     if not normalized:
         return None
-    normalized = _normalize_temp_suffix_format(normalized)
     normalized = _remove_file_number_suffixes(normalized) or normalized
     return normalized.upper()
 
@@ -975,8 +947,7 @@ def _run_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str
     qc_issues = {
         'padding': [],
         'year': [],
-        'spacing': [],
-        'temp': []
+        'spacing': []
     }
 
     for idx, record in enumerate(records):
@@ -1024,18 +995,6 @@ def _run_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str
                 'severity': 'Medium'
             })
 
-        temp_issue = _check_temp_issue(base_for_spacing)
-        if temp_issue:
-            qc_issues['temp'].append({
-                'record_index': idx,
-                'file_number': display_number,
-                'issue_type': 'temp',
-                'description': 'File number has improper TEMP notation format',
-                'suggested_fix': temp_issue['suggested_fix'],
-                'auto_fixable': True,
-                'severity': 'Low'
-            })
-
     return qc_issues
 
 
@@ -1045,7 +1004,7 @@ def _check_padding_issue(file_number: str) -> Optional[Dict[str, str]]:
     if match:
         prefix, year, leading_zeros, number, suffix = match.groups()
         suffix = suffix or ''
-        suggested_fix = _normalize_temp_suffix_format(f"{prefix}-{year}-{number}{suffix}")
+        suggested_fix = f"{prefix}-{year}-{number}{suffix}"
         return {'suggested_fix': suggested_fix}
     return None
 
@@ -1063,7 +1022,7 @@ def _check_year_issue(file_number: str) -> Optional[Dict[str, str]]:
         else:
             year_4digit = f"20{year_2digit}"
 
-        suggested_fix = _normalize_temp_suffix_format(f"{prefix}-{year_4digit}-{number}{suffix}")
+        suggested_fix = f"{prefix}-{year_4digit}-{number}{suffix}"
         return {'suggested_fix': suggested_fix}
     return None
 
@@ -1072,14 +1031,16 @@ def _check_spacing_issue(file_number: str) -> Optional[Dict[str, str]]:
     if not re.search(r'\s', file_number):
         return None
 
-    normalized_with_temp = _normalize_temp_suffix_format(file_number)
-    temp_match = re.search(r'\s*\(TEMP\)$', normalized_with_temp, flags=re.IGNORECASE)
+    trimmed = str(file_number).strip()
+    suffix_text = ''
+    base_value = trimmed
 
-    suffix = ''
-    base_value = normalized_with_temp
-    if temp_match:
-        base_value = normalized_with_temp[:temp_match.start()].rstrip('- ')
-        suffix = ' (TEMP)'
+    suffix_match = re.search(r'\s*(\([^)]*\))$', trimmed)
+    if suffix_match:
+        base_value = trimmed[:suffix_match.start()].rstrip('- ')
+        suffix_candidate = suffix_match.group(1)
+        if suffix_candidate:
+            suffix_text = suffix_candidate.strip()
 
     if not re.search(r'\s', base_value):
         return None
@@ -1087,24 +1048,11 @@ def _check_spacing_issue(file_number: str) -> Optional[Dict[str, str]]:
     hyphenated = re.sub(r'\s+', '-', base_value.strip())
     hyphenated = re.sub(r'-{2,}', '-', hyphenated).strip('-')
 
-    candidate = f"{hyphenated}{suffix}" if hyphenated else _strip_all_whitespace(file_number)
-    suggested_fix = _normalize_temp_suffix_format(candidate)
-    return {'suggested_fix': suggested_fix}
+    candidate = hyphenated if hyphenated else _strip_all_whitespace(trimmed)
+    if suffix_text:
+        candidate = f"{candidate} {suffix_text}".strip()
 
-
-def _check_temp_issue(file_number: str) -> Optional[Dict[str, str]]:
-    normalized = _normalize_temp_suffix_format(file_number)
-    if not normalized:
-        return None
-
-    cleaned = file_number.strip()
-    if cleaned == normalized:
-        return None
-
-    if re.search(r'(TEMP|\(TEMP\)|\(T\)|\bT)$', cleaned, flags=re.IGNORECASE):
-        return {'suggested_fix': normalized}
-
-    return None
+    return {'suggested_fix': candidate}
 
 
 def _assign_property_ids(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1287,7 +1235,6 @@ __all__ = [
     '_normalize_numeric_field',
     '_collapse_whitespace',
     '_strip_all_whitespace',
-    '_normalize_temp_suffix_format',
     '_normalize_registry',
     '_normalize_time_field',
     '_combine_location',
@@ -1306,7 +1253,6 @@ __all__ = [
     '_check_padding_issue',
     '_check_year_issue',
     '_check_spacing_issue',
-    '_check_temp_issue',
     '_assign_property_ids',
     '_get_next_property_id_counter',
     '_find_existing_property_id',

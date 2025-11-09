@@ -24,14 +24,6 @@ const FILE_HISTORY_QC_CATEGORY_CONFIG = [
         description: 'Remove stray spaces or dashes to normalize separators.'
     },
     {
-        key: 'temp',
-        label: 'TEMP Issues',
-        tone: 'secondary',
-        severity: 'Low',
-    icon: 'fa-temperature-half',
-        description: 'Standardize TEMP notation so the archive can index it.'
-    },
-    {
         key: 'missing_file_number',
         label: 'Missing File Numbers',
         tone: 'danger',
@@ -66,7 +58,7 @@ class FileHistoryImportManager {
         this.categoryConfig = {};
         this.categoryOrder = [];
         this.filterControls = document.getElementById('historyFilterControls');
-        this.fileNumberIssueTypes = ['padding', 'year', 'spacing', 'temp', 'missing_file_number'];
+    this.fileNumberIssueTypes = ['padding', 'year', 'spacing', 'missing_file_number'];
         this.activeInlineEdit = null;
         this.fixAllButton = document.getElementById('historyFileNumberFixAllBtn');
         this.fixAllButtonWrapper = document.getElementById('historyFileNumberFixAllWrapper');
@@ -1893,7 +1885,6 @@ class FileHistoryImportManager {
             padding: 'Padding Issues',
             year: 'Year Issues',
             spacing: 'Spacing Issues',
-            temp: 'TEMP Issues',
             missing_file_number: 'Missing File Numbers'
         };
         return friendly[category] || category.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());

@@ -186,3 +186,6 @@ Thumbs.db
 # Project specific
 file_indexing.db
 test_data.csv
+
+# Documentation (local notes & temporary docs)
+docs/

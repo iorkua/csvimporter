@@ -13,16 +13,16 @@
 - Long-running tasks rely on Pandas plus in-memory processing; stream uploads into `io.BytesIO` and call the existing normalization utilities (`_normalize_string`, `_strip_all_whitespace`, etc.) for consistency.
 
 ## Quality control & file-number rules
-- `_run_pra_qc_validation` is the single source for file-number QC. It fans out to `_check_padding_issue`, `_check_year_issue`, `_check_spacing_issue`, and `_check_temp_issue`, returning entries that include `record_index`, `file_number`, and optional `suggested_fix` strings.
+- `_run_pra_qc_validation` is the single source for file-number QC. It fans out to `_check_padding_issue`, `_check_year_issue`, and `_check_spacing_issue`, returning entries that include `record_index`, `file_number`, and optional `suggested_fix` strings.
 - File History adds supplemental buckets (`missing_required_fields`, `invalid_dates`, `missing_reg_components`) in `_run_file_history_qc_validation`; mark `record['hasIssues']` when anything is appended so the UI highlights the row.
 - When updating a record server-side, call `_apply_file_history_field_update` so linked fields stay in sync (e.g. editing `mlsFNo` also updates `fileno`, `file_number`, and parallel CofO rows).
-- The frontend expects QC payload keys to match `fileNumberIssueTypes` in `static/js/file-history-import.js` (default: `padding`, `year`, `spacing`, `temp`, `missing_file_number`). Adding a new bucket means updating that array plus the summary card config.
+- The frontend expects QC payload keys to match `fileNumberIssueTypes` in `static/js/file-history-import.js` (default: `padding`, `year`, `spacing`, `missing_file_number`). Adding a new bucket means updating that array plus the summary card config.
 - Auto-fix buttons use the `suggested_fix` string: `applyFileNumberFix` posts a `record_type='records'` update for `mlsFNo`. Populate `suggested_fix` whenever a backend rule can safely normalize a value.
 
 ## Frontend patterns
 - Feature scripts such as `static/js/file-history-import.js` and `static/js/file-indexing.js` expect JSON responses in the shapes produced by the backend helpers; adjust both sides together when adding fields.
 - Inline editing and delete actions call `/api/file-history/update|delete/{session_id}` and assume optimistic updates—remember to re-run QC+duplicate counts server-side before responding.
-- Table badges and summary counts are derived from QC category keys (`padding`, `year`, `spacing`, `temp`, etc.); if you add a new category, update both the config array and CSS badge mapping.
+- Table badges and summary counts are derived from QC category keys (`padding`, `year`, `spacing`, etc.); if you add a new category, update both the config array and CSS badge mapping.
 - Bootstrap 5 plus custom utilities (`inline-editable`, `history-delete-btn`) drive the UI; keep new components compatible with the existing class structure.
 
 ## Developer workflow

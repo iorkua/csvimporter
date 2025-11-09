@@ -111,7 +111,6 @@ def _prepare_file_indexing_preview_payload(
             'padding': [],
             'year': [],
             'spacing': [],
-            'temp': [],
             'note': f'QC validation skipped for large dataset ({len(records)} records). QC will run during import.'
         }
         
@@ -131,12 +130,17 @@ def _prepare_file_indexing_preview_payload(
         "test_control": test_control_value
     }
 
+    total_issue_count = sum(
+        len(issue_list)
+        for issue_list in qc_issues.values()
+        if isinstance(issue_list, list)
+    )
+
     qc_summary = {
-        "total_issues": sum(len(issues) for issues in qc_issues.values()),
+        "total_issues": total_issue_count,
         "padding_issues": len(qc_issues.get('padding', [])),
         "year_issues": len(qc_issues.get('year', [])),
-        "spacing_issues": len(qc_issues.get('spacing', [])),
-        "temp_issues": len(qc_issues.get('temp', []))
+        "spacing_issues": len(qc_issues.get('spacing', []))
     }
 
     property_id_summary = {

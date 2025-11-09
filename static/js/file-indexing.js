@@ -11,8 +11,7 @@ class FileIndexingManager {
         this.qcIssues = {
             padding: [],
             year: [],
-            spacing: [],
-            temp: []
+            spacing: []
         };
         this.propertyAssignments = [];
         this.selectedRows = new Set();
@@ -323,8 +322,6 @@ class FileIndexingManager {
                 const spacingEl = document.getElementById('qcSpacingCount');
                 if (spacingEl) spacingEl.textContent = qcSummary.spacing_issues || 0;
                 
-                const tempEl = document.getElementById('qcTempCount');
-                if (tempEl) tempEl.textContent = qcSummary.temp_issues || 0;
                 
                 // Show notification with QC summary
                 if (totalIssues > 0) {
@@ -374,7 +371,6 @@ class FileIndexingManager {
                 this.qcIssues.padding = result.qc_issues.padding || [];
                 this.qcIssues.year = result.qc_issues.year || [];
                 this.qcIssues.spacing = result.qc_issues.spacing || [];
-                this.qcIssues.temp = result.qc_issues.temp || [];
             }
             if (result.property_assignments) {
                 this.propertyAssignments = result.property_assignments || [];
@@ -518,8 +514,7 @@ class FileIndexingManager {
         const safeIssues = {
             padding: Array.isArray(this.qcIssues.padding) ? this.qcIssues.padding : [],
             year: Array.isArray(this.qcIssues.year) ? this.qcIssues.year : [],
-            spacing: Array.isArray(this.qcIssues.spacing) ? this.qcIssues.spacing : [],
-            temp: Array.isArray(this.qcIssues.temp) ? this.qcIssues.temp : []
+            spacing: Array.isArray(this.qcIssues.spacing) ? this.qcIssues.spacing : []
         };
 
         this.qcIssues = safeIssues;
@@ -538,8 +533,6 @@ class FileIndexingManager {
         const spacingEl = document.getElementById('qcSpacingCount');
         if (spacingEl) spacingEl.textContent = this.qcIssues.spacing.length;
         
-        const tempEl = document.getElementById('qcTempCount');
-        if (tempEl) tempEl.textContent = this.qcIssues.temp.length;
         
         const newAssignments = this.propertyAssignments.filter(item => item.status === 'new').length;
         const existingAssignments = this.propertyAssignments.filter(item => item.status === 'existing').length;
@@ -573,7 +566,7 @@ class FileIndexingManager {
         const allIssues = [];
         
         // Combine all issue types
-        ['padding', 'year', 'spacing', 'temp'].forEach(type => {
+        ['padding', 'year', 'spacing'].forEach(type => {
             this.qcIssues[type].forEach(issue => {
                 allIssues.push({
                     type: type,
@@ -651,8 +644,7 @@ class FileIndexingManager {
         const typeConfig = {
             padding: { label: 'Padding', theme: 'warning' },
             year: { label: 'Year Format', theme: 'danger' },
-            spacing: { label: 'Spacing', theme: 'info' },
-            temp: { label: 'Improper TEMP notation', theme: 'secondary' }
+            spacing: { label: 'Spacing', theme: 'info' }
         };
 
         const config = typeConfig[type] || { label: type, theme: 'secondary' };
@@ -744,7 +736,7 @@ class FileIndexingManager {
         const allIssues = [];
         
         // Collect all issues with suggested fixes
-        ['padding', 'year', 'spacing', 'temp'].forEach(type => {
+        ['padding', 'year', 'spacing'].forEach(type => {
             this.qcIssues[type].forEach(issue => {
                 if (issue.suggested_fix) {
                     allIssues.push({

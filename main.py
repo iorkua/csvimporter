@@ -33,7 +33,6 @@ from app.services.file_indexing_service import (
     _has_cofo_payload,
     _normalize_numeric_field,
     _normalize_string,
-    _normalize_temp_suffix_format,
     _strip_all_whitespace,
     _update_cofo,
     _generate_tracking_id,
@@ -230,8 +229,7 @@ def _run_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str
     qc_issues = {
         'padding': [],
         'year': [],
-        'spacing': [],
-        'temp': []
+        'spacing': []
     }
     
     for idx, record in enumerate(records):
@@ -282,19 +280,6 @@ def _run_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str
                 'severity': 'Medium'
             })
         
-        # Check for TEMP notation issues
-        temp_issue = _check_temp_issue(base_for_spacing)
-        if temp_issue:
-            qc_issues['temp'].append({
-                'record_index': idx,
-                'file_number': display_number,
-                'issue_type': 'temp',
-                'description': 'File number has improper TEMP notation format',
-                'suggested_fix': temp_issue['suggested_fix'],
-                'auto_fixable': True,
-                'severity': 'Low'
-            })
-    
     return qc_issues
 
 
@@ -305,7 +290,7 @@ def _check_padding_issue(file_number: str) -> Optional[Dict[str, str]]:
     if match:
         prefix, year, leading_zeros, number, suffix = match.groups()
         suffix = suffix or ''
-        suggested_fix = _normalize_temp_suffix_format(f"{prefix}-{year}-{number}{suffix}")
+        suggested_fix = f"{prefix}-{year}-{number}{suffix}"
         return {'suggested_fix': suggested_fix}
     return None
 
@@ -325,7 +310,7 @@ def _check_year_issue(file_number: str) -> Optional[Dict[str, str]]:
         else:  # 00-49 means 2000-2049
             year_4digit = f"20{year_2digit}"
         
-        suggested_fix = _normalize_temp_suffix_format(f"{prefix}-{year_4digit}-{number}{suffix}")
+        suggested_fix = f"{prefix}-{year_4digit}-{number}{suffix}"
         return {'suggested_fix': suggested_fix}
     return None
 
@@ -335,42 +320,29 @@ def _check_spacing_issue(file_number: str) -> Optional[Dict[str, str]]:
     if not re.search(r'\s', file_number):
         return None
 
-    normalized_with_temp = _normalize_temp_suffix_format(file_number)
-    temp_match = re.search(r'\s*\(TEMP\)$', normalized_with_temp, flags=re.IGNORECASE)
+    trimmed = str(file_number).strip()
+    suffix_text = ''
+    base_value = trimmed
 
-    suffix = ''
-    base_value = normalized_with_temp
-    if temp_match:
-        base_value = normalized_with_temp[:temp_match.start()].rstrip('- ')
-        suffix = ' (TEMP)'
+    suffix_match = re.search(r'\s*(\([^)]*\))$', trimmed)
+    if suffix_match:
+        base_value = trimmed[:suffix_match.start()].rstrip('- ')
+        suffix_candidate = suffix_match.group(1)
+        if suffix_candidate:
+            suffix_text = suffix_candidate.strip()
 
     if not re.search(r'\s', base_value):
-        # Only whitespace present is part of a correctly formatted TEMP suffix
+        # Allow trailing parenthetical suffixes that do not introduce extra spaces
         return None
 
     hyphenated = re.sub(r'\s+', '-', base_value.strip())
     hyphenated = re.sub(r'-{2,}', '-', hyphenated).strip('-')
 
-    candidate = f"{hyphenated}{suffix}" if hyphenated else _strip_all_whitespace(file_number)
-    suggested_fix = _normalize_temp_suffix_format(candidate)
-    return {'suggested_fix': suggested_fix}
-    return None
+    candidate = hyphenated if hyphenated else _strip_all_whitespace(trimmed)
+    if suffix_text:
+        candidate = f"{candidate} {suffix_text}".strip()
 
-
-def _check_temp_issue(file_number: str) -> Optional[Dict[str, str]]:
-    """Check if file number has improper TEMP notation"""
-    normalized = _normalize_temp_suffix_format(file_number)
-    if not normalized:
-        return None
-
-    cleaned = file_number.strip()
-    if cleaned == normalized:
-        return None
-
-    if re.search(r'(TEMP|\(TEMP\)|\(T\)|\bT)$', cleaned, flags=re.IGNORECASE):
-        return {'suggested_fix': normalized}
-
-    return None
+    return {'suggested_fix': candidate}
 
 
 def _coerce_sql_date(value: Optional[str]) -> Optional[str]:
@@ -938,7 +910,6 @@ def _run_file_history_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, 
         'padding': [],
         'year': [],
         'spacing': [],
-        'temp': [],
         'missing_file_number': []
     }
 
@@ -1007,20 +978,6 @@ def _run_file_history_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, 
                 'suggested_fix': spacing_issue['suggested_fix'],
                 'auto_fixable': True,
                 'severity': 'Medium'
-            })
-            record['hasIssues'] = True
-
-        temp_issue = _check_temp_issue(base_for_spacing)
-        if temp_issue:
-            qc_issues['temp'].append({
-                'record_index': idx,
-                'row': idx + 1,
-                'issue_type': 'temp',
-                'file_number': display_number,
-                'description': 'File number has improper TEMP notation format',
-                'suggested_fix': temp_issue['suggested_fix'],
-                'auto_fixable': True,
-                'severity': 'Low'
             })
             record['hasIssues'] = True
 
@@ -1443,7 +1400,6 @@ async def import_file_history(session_id: str):
     now = datetime.utcnow()
     property_records_count = 0
     cofo_records_count = 0
-    file_number_records_count = 0
     mode = (session_data.get('test_control') or 'PRODUCTION').upper()
 
     try:
@@ -1522,23 +1478,15 @@ async def import_file_history(session_id: str):
             cofo_records_count += 1
 
         
-        for record in session_data.get('file_number_records', []):
-            if record.get('hasIssues'):
-                continue
-
-            _import_file_number_record(db, record, now, test_control=mode)
-            file_number_records_count += 1
-
         db.commit()
 
         del app.sessions[session_id]
 
         return {
             "success": True,
-            "imported_count": property_records_count + cofo_records_count + file_number_records_count,
+            "imported_count": property_records_count + cofo_records_count,
             "property_records_count": property_records_count,
             "cofo_records_count": cofo_records_count,
-            "file_number_records_count": file_number_records_count,
             "test_control": mode
         }
 
@@ -1575,11 +1523,6 @@ async def clear_file_history_data(request: FileHistoryClearDataRequest):
             CofO.title_type == 'File History'
         ).delete(synchronize_session=False)
 
-        file_number_deleted = db.query(FileNumber).filter(
-            FileNumber.test_control == mode,
-            FileNumber.source == 'File History'
-        ).delete(synchronize_session=False)
-
         db.commit()
         return {
             "success": True,
@@ -1587,7 +1530,7 @@ async def clear_file_history_data(request: FileHistoryClearDataRequest):
             "counts": {
                 "file_history": property_deleted,
                 "CofO_staging": cofo_deleted,
-                "fileNumber": file_number_deleted
+                "fileNumber": 0
             }
         }
     except Exception as exc:  # pragma: no cover - safeguard against cascading deletes
@@ -1793,12 +1736,11 @@ async def clear_pic_data(request: PICClearDataRequest):
             {"mode": mode}
         )
         cofo_deleted = db.query(CofO).filter(CofO.test_control == mode).delete(synchronize_session=False)
-        file_number_deleted = db.query(FileNumber).filter(FileNumber.test_control == mode).delete(synchronize_session=False)
 
         counts = {
             "pic": property_result.rowcount if property_result is not None else 0,
             "CofO_staging": cofo_deleted,
-            "fileNumber": file_number_deleted
+            "fileNumber": 0
         }
         db.commit()
         return {
@@ -1828,7 +1770,6 @@ async def import_pic(session_id: str):
     now = datetime.utcnow()
     property_records_count = 0
     cofo_records_count = 0
-    file_number_records_count = 0
     test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
 
     try:
@@ -1907,25 +1848,15 @@ async def import_pic(session_id: str):
 
             cofo_records_count += 1
 
-        
-        for record in session_data.get('file_number_records', []):
-            if record.get('hasIssues'):
-                continue
-
-            record['test_control'] = test_control
-            _import_file_number_record(db, record, now, test_control=test_control)
-            file_number_records_count += 1
-
         db.commit()
 
         del app.sessions[session_id]
 
         return {
             "success": True,
-            "imported_count": property_records_count + cofo_records_count + file_number_records_count,
+            "imported_count": property_records_count + cofo_records_count,
             "property_records_count": property_records_count,
             "cofo_records_count": cofo_records_count,
-            "file_number_records_count": file_number_records_count,
             "test_control": test_control
         }
 
@@ -2244,51 +2175,6 @@ def _import_property_record(db, record, timestamp, *, allow_update: bool = True,
             'created_at': created_at_value or timestamp
         })
 
-
-def _import_file_number_record(db, record, timestamp, *, test_control: Optional[str] = None):
-    """Import a single file number record to fileNumber table"""
-    from sqlalchemy import text
-    
-    current_test_control = (test_control or record.get('test_control') or 'PRODUCTION').upper()
-    params = {
-        **record,
-        'test_control': current_test_control,
-        'mlsfNo': record.get('mlsfNo')
-    }
-
-    # Check if record already exists
-    existing = db.execute(text("""
-        SELECT id FROM fileNumber WHERE mlsfNo = :file_number
-    """), {'file_number': params['mlsfNo']}).first()
-    
-    if existing:
-        # Update existing record
-        db.execute(text("""
-            UPDATE fileNumber SET
-                FileName = :FileName,
-                location = :location,
-                plot_no = :plot_no,
-                test_control = :test_control,
-                updated_at = :updated_at
-            WHERE mlsfNo = :mlsfNo
-        """), {
-            **params,
-            'updated_at': timestamp
-        })
-    else:
-        # Insert new record
-        db.execute(text("""
-            INSERT INTO fileNumber (
-                mlsfNo, FileName, created_at, location, created_by, type, SOURCE, plot_no, tracking_id, test_control
-            ) VALUES (
-                :mlsfNo, :FileName, :created_at, :location, :created_by, :type, :SOURCE, :plot_no, :tracking_id, :test_control
-            )
-        """), {
-            **params,
-            'created_at': timestamp
-        })
-
-
 # ========== PRA IMPORT ENDPOINTS ==========
 
 
@@ -2307,11 +2193,9 @@ async def clear_pra_data(request: PRAClearDataRequest):
             {"mode": mode}
         )
 
-        file_number_deleted = db.query(FileNumber).filter(FileNumber.test_control == mode).delete(synchronize_session=False)
-
         counts = {
             "pra": property_result.rowcount if property_result is not None else 0,
-            "fileNumber": file_number_deleted
+            "fileNumber": 0
         }
 
         db.commit()
@@ -2384,8 +2268,7 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             'total_issues': len(qc_rows),
             'padding_issues': len(qc_issues_raw.get('padding', [])),
             'year_issues': len(qc_issues_raw.get('year', [])),
-            'spacing_issues': len(qc_issues_raw.get('spacing', [])),
-            'temp_issues': len(qc_issues_raw.get('temp', []))
+            'spacing_issues': len(qc_issues_raw.get('spacing', []))
         }
 
         # Detect duplicates for property and file-number tables
@@ -2456,7 +2339,7 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
 
 @app.post("/api/import-pra/{session_id}")
 async def import_pra(session_id: str):
-    """Import PRA data to property_records and fileNumber tables"""
+    """Import PRA data into the PRA staging tables."""
     if not hasattr(app, 'sessions') or session_id not in app.sessions:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -2466,7 +2349,6 @@ async def import_pra(session_id: str):
 
     db = SessionLocal()
     property_records_count = 0
-    file_numbers_count = 0
     now = datetime.utcnow()
     test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
 
@@ -2480,15 +2362,6 @@ async def import_pra(session_id: str):
             _import_property_record(db, record, now, staging_table='pra')
             property_records_count += 1
 
-        # Import file numbers
-        for record in session_data["file_numbers"]:
-            # Skip records with issues if configured to do so
-            if record.get('hasIssues', False):
-                continue
-            record['test_control'] = test_control
-            _import_file_number_record(db, record, now, test_control=test_control)
-            file_numbers_count += 1
-
         db.commit()
 
         # Clean up session
@@ -2496,9 +2369,8 @@ async def import_pra(session_id: str):
 
         return {
             "success": True,
-            "imported_count": property_records_count + file_numbers_count,
+            "imported_count": property_records_count,
             "property_records_count": property_records_count,
-            "file_numbers_count": file_numbers_count,
             "test_control": test_control
         }
 

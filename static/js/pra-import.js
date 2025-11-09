@@ -18,8 +18,7 @@ class PRAImportManager {
             total_issues: 0,
             padding_issues: 0,
             year_issues: 0,
-            spacing_issues: 0,
-            temp_issues: 0
+            spacing_issues: 0
         };
         this.ACRE_TO_HECTARE = 0.40468564224;
         this.testControlSelect = document.getElementById('praTestControlSelect');
@@ -364,8 +363,7 @@ class PRAImportManager {
         const names = {
             padding: 'Padding',
             year: 'Year',
-            spacing: 'Spacing',
-            temp: 'TEMP'
+            spacing: 'Spacing'
         };
         return names[issueType] || issueType;
     }

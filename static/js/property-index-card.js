@@ -2,7 +2,6 @@ const PIC_QC_CATEGORY_CONFIG = [
     { key: 'padding', label: 'Padding Issues', tone: 'warning', severity: 'Medium' },
     { key: 'year', label: 'Year Issues', tone: 'danger', severity: 'High' },
     { key: 'spacing', label: 'Spacing Issues', tone: 'info', severity: 'Medium' },
-    { key: 'temp', label: 'TEMP Issues', tone: 'secondary', severity: 'Low' },
     { key: 'missing_file_number', label: 'Missing File Numbers', tone: 'danger', severity: 'High' }
 ];
 
@@ -15,7 +14,7 @@ const PIC_QC_TONE_CLASSMAP = {
     primary: { border: 'border-primary', text: 'text-primary' }
 };
 
-const PIC_FILE_NUMBER_ISSUE_TYPES = ['padding', 'year', 'spacing', 'temp', 'missing_file_number'];
+const PIC_FILE_NUMBER_ISSUE_TYPES = ['padding', 'year', 'spacing', 'missing_file_number'];
 
 class PropertyIndexCardImportManager {
     constructor() {
@@ -1851,7 +1850,6 @@ class PropertyIndexCardImportManager {
             padding: 'Padding Issues',
             year: 'Year Issues',
             spacing: 'Spacing Issues',
-            temp: 'TEMP Issues',
             missing_file_number: 'Missing File Numbers'
         };
         return friendly[category] || category.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());

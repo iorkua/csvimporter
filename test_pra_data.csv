@@ -1,4 +1,0 @@
-mlsFNo,transaction_type,transaction_date,SerialNo,pageNo,volumeNo,Grantor/Assignor,Grantee/Assignee,districtName,LGA,streetName,house_no,plot_no,plot_size,CreatedBy,DateCreated
-MLS001,"Deed of Assignment","2023-01-15",123.0,45.0,67.0,"John Smith","Jane Doe","Central District","Lagos State","Main Street","15A","Plot 100","500 sqm","Admin","2023-01-15"
-MLS002,"Certificate of Occupancy","2023-02-20",124.0,46.0,68.0,"Alice Johnson","Bob Wilson","Victoria Island","Lagos State","Broad Street","22B","Plot 200","750 sqm","Admin","2023-02-20"
-MLS003,"Deed of Gift","2023-03-10",125.0,47.0,69.0,"Michael Brown","Sarah Davis","Ikoyi","Lagos State","Kingsway Road","8C","Plot 300","1000 sqm","Admin","2023-03-10"
