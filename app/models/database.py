@@ -43,7 +43,7 @@ class FileIndexing(Base):
 
 
 class CofO(Base):
-    __tablename__ = 'CofO'
+    __tablename__ = 'CofO_staging'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     mls_fno = Column('mlsFNo', String(100))

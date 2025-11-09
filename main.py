@@ -50,6 +50,15 @@ templates = Jinja2Templates(directory="templates")
 app.include_router(file_indexing_router)
 
 
+# ========== STAGING TABLE MAPPING ==========
+# These staging tables replace property_records in their respective import flows:
+STAGING_TABLES = {
+    'file_history': 'file_history',      # File History import staging
+    'pic': 'pic',                        # Property Index Card staging
+    'pra': 'pra'                         # PRA import staging
+}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     """Landing page for the CSV Importer UI."""
@@ -1421,7 +1430,7 @@ async def delete_file_history_record(session_id: str, payload: FileHistoryRecord
 
 @app.post("/api/import-file-history/{session_id}")
 async def import_file_history(session_id: str):
-    """Commit File History records into property_records and CofO tables."""
+    """Commit File History records into file_history and CofO_staging tables."""
 
     if not hasattr(app, 'sessions') or session_id not in app.sessions:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1473,7 +1482,7 @@ async def import_file_history(session_id: str):
                 'test_control': mode
             }
 
-            _import_property_record(db, payload, now, allow_update=False)
+            _import_property_record(db, payload, now, allow_update=False, staging_table='file_history')
             property_records_count += 1
 
         for record in session_data['cofo_records']:
@@ -1555,7 +1564,7 @@ async def clear_file_history_data(request: FileHistoryClearDataRequest):
 
         property_result = db.execute(
             text(
-                "DELETE FROM property_records WHERE test_control = :mode AND (source = :source OR migration_source = :source)"
+                "DELETE FROM file_history WHERE test_control = :mode AND (source = :source OR migration_source = :source)"
             ),
             {"mode": mode, "source": "File History"}
         )
@@ -1576,8 +1585,8 @@ async def clear_file_history_data(request: FileHistoryClearDataRequest):
             "success": True,
             "mode": mode,
             "counts": {
-                "property_records": property_deleted,
-                "CofO": cofo_deleted,
+                "file_history": property_deleted,
+                "CofO_staging": cofo_deleted,
                 "fileNumber": file_number_deleted
             }
         }
@@ -1780,15 +1789,15 @@ async def clear_pic_data(request: PICClearDataRequest):
         from sqlalchemy import text
 
         property_result = db.execute(
-            text("DELETE FROM property_records WHERE test_control = :mode"),
+            text("DELETE FROM pic WHERE test_control = :mode"),
             {"mode": mode}
         )
         cofo_deleted = db.query(CofO).filter(CofO.test_control == mode).delete(synchronize_session=False)
         file_number_deleted = db.query(FileNumber).filter(FileNumber.test_control == mode).delete(synchronize_session=False)
 
         counts = {
-            "property_records": property_result.rowcount if property_result is not None else 0,
-            "CofO": cofo_deleted,
+            "pic": property_result.rowcount if property_result is not None else 0,
+            "CofO_staging": cofo_deleted,
             "fileNumber": file_number_deleted
         }
         db.commit()
@@ -1806,7 +1815,7 @@ async def clear_pic_data(request: PICClearDataRequest):
 
 @app.post("/api/import-pic/{session_id}")
 async def import_pic(session_id: str):
-    """Commit PIC records into property_records and CofO tables."""
+    """Commit PIC records into pic and CofO_staging tables."""
 
     if not hasattr(app, 'sessions') or session_id not in app.sessions:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1858,7 +1867,7 @@ async def import_pic(session_id: str):
                 'test_control': test_control
             }
 
-            _import_property_record(db, payload, now)
+            _import_property_record(db, payload, now, staging_table='pic')
             property_records_count += 1
 
         for record in session_data.get('cofo_records', []):
@@ -2145,15 +2154,19 @@ def _detect_pra_duplicates(records):
     return duplicates
 
 
-def _import_property_record(db, record, timestamp, *, allow_update: bool = True):
-    """Import a single property record to property_records table."""
+def _import_property_record(db, record, timestamp, *, allow_update: bool = True, staging_table: str = 'property_records'):
+    """Import a single property record to the specified staging table."""
     from sqlalchemy import text
+    
+    # Validate staging table name to prevent SQL injection
+    if staging_table not in ('property_records', 'file_history', 'pic', 'pra'):
+        staging_table = 'property_records'
     
     existing = None
     if allow_update:
         # Check if record already exists when updates are permitted
-        existing = db.execute(text("""
-            SELECT id FROM property_records WHERE mlsFNo = :file_number
+        existing = db.execute(text(f"""
+            SELECT id FROM {staging_table} WHERE mlsFNo = :file_number
         """), {'file_number': record['mlsFNo']}).first()
     
     created_at_override = record.get('created_at_override')
@@ -2178,12 +2191,14 @@ def _import_property_record(db, record, timestamp, *, allow_update: bool = True)
 
     params['test_control'] = (params.get('test_control') or 'PRODUCTION').upper()
 
+    # Coerce date fields to ISO format acceptable by SQL Server
     params['transaction_date'] = _coerce_sql_date(params.get('transaction_date'))
+    params['date_created'] = _coerce_sql_date(params.get('date_created'))
 
     if existing:
         # Update existing record
-        db.execute(text("""
-            UPDATE property_records SET
+        db.execute(text(f"""
+            UPDATE {staging_table} SET
                 transaction_type = :transaction_type,
                 transaction_date = :transaction_date,
                 serialNo = :serialNo,
@@ -2212,8 +2227,8 @@ def _import_property_record(db, record, timestamp, *, allow_update: bool = True)
         })
     else:
         # Insert new record
-        db.execute(text("""
-            INSERT INTO property_records (
+        db.execute(text(f"""
+            INSERT INTO {staging_table} (
                 mlsFNo, fileno, transaction_type, transaction_date, serialNo, oldKNNo, pageNo, volumeNo, regNo,
                 instrument_type, Grantor, Grantee, property_description, location, streetName, house_no,
                 districtName, plot_no, lgsaOrCity, source, plot_size, migrated_by, prop_id, created_at,
@@ -2288,14 +2303,14 @@ async def clear_pra_data(request: PRAClearDataRequest):
         from sqlalchemy import text
 
         property_result = db.execute(
-            text("DELETE FROM property_records WHERE test_control = :mode"),
+            text("DELETE FROM pra WHERE test_control = :mode"),
             {"mode": mode}
         )
 
         file_number_deleted = db.query(FileNumber).filter(FileNumber.test_control == mode).delete(synchronize_session=False)
 
         counts = {
-            "property_records": property_result.rowcount if property_result is not None else 0,
+            "pra": property_result.rowcount if property_result is not None else 0,
             "fileNumber": file_number_deleted
         }
 
@@ -2456,13 +2471,13 @@ async def import_pra(session_id: str):
     test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
 
     try:
-        # Import property records
+        # Import property records to 'pra' staging table
         for record in session_data["property_records"]:
             # Skip records with issues if configured to do so
             if record.get('hasIssues', False):
                 continue
             record['test_control'] = test_control
-            _import_property_record(db, record, now)
+            _import_property_record(db, record, now, staging_table='pra')
             property_records_count += 1
 
         # Import file numbers
