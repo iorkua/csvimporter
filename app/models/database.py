@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, Text, Index, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -133,6 +133,59 @@ class Grouping(Base):
     sys_batch_no = Column(String(50))  # System batch number
     test_control = Column('test_control', String(20), default='PRODUCTION')
     tracking_id = Column(String(50))
+
+
+class EntityStaging(Base):
+    __tablename__ = 'entities_staging'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    entity_type = Column(String(50), nullable=False)  # 'Individual', 'Corporate', 'Multiple'
+    entity_name = Column(String(255), nullable=False, index=True)
+    passport_photo = Column(String(500), nullable=True)  # URL only, can be NULL
+    company_logo = Column(String(500), nullable=True)    # URL only, can be NULL
+    file_number = Column(String(100), nullable=True, index=True)  # Link to FileIndexing
+    import_batch = Column(String(50), nullable=False, index=True)  # UUID for tracking
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+    test_control = Column(String(20), default='PRODUCTION')
+    
+    __table_args__ = (
+        Index('idx_entity_name_type', 'entity_name', 'entity_type'),
+        Index('idx_import_batch', 'import_batch'),
+    )
+
+
+class CustomerStaging(Base):
+    __tablename__ = 'customers_staging'
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_type = Column(String(50), nullable=False)  # 'Individual', 'Corporate', 'Multiple'
+    status = Column(String(50), default='pending', nullable=False)  # pending, validated, migrated, failed
+    customer_name = Column(String(255), nullable=False, index=True)
+    email = Column(String(255), nullable=True, index=True)
+    phone = Column(String(20), nullable=True)
+    property_address = Column(String(500), nullable=True)
+    residential_address = Column(String(500), nullable=True)
+    notes = Column(Text, nullable=True)
+    customer_code = Column(String(50), nullable=True, unique=True, index=True)
+    created_by = Column(Integer, nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)
+    deleted_at = Column(DateTime, nullable=True)  # Soft delete
+    entity_id = Column(Integer, ForeignKey('entities_staging.id'), nullable=True, index=True)
+    file_number = Column(String(100), nullable=True, index=True)  # Link to FileIndexing
+    import_batch = Column(String(50), nullable=False, index=True)  # Same as EntityStaging
+    source_filename = Column(String(255), nullable=True)
+    
+    __table_args__ = (
+        Index('idx_customer_name_type', 'customer_name', 'customer_type'),
+        Index('idx_import_batch', 'import_batch'),
+        Index('idx_status', 'status'),
+    )
+
 
 def get_database_url():
     # Check if SQL Server configuration is available

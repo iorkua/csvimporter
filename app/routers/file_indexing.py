@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core import session_manager
-from app.models.database import CofO, FileIndexing, FileNumber, Grouping, SessionLocal
+from app.models.database import CofO, FileIndexing, FileNumber, Grouping, SessionLocal, EntityStaging, CustomerStaging
 from app.services.file_indexing_service import (
     analyze_file_number_occurrences,
     process_file_indexing_data,
@@ -31,6 +31,16 @@ from app.services.file_indexing_service import (
     _update_cofo,
     _run_qc_validation,
     _upsert_file_number,
+    # Staging functions
+    _classify_customer_type,
+    _extract_entity_name,
+    _extract_customer_name,
+    _extract_customer_address,
+    _extract_photos,
+    _generate_customer_code,
+    _generate_import_batch_id,
+    _get_or_create_entity,
+    _process_staging_import,
 )
 
 router = APIRouter()
@@ -69,6 +79,80 @@ def _read_excel_stream(data: bytes) -> pd.DataFrame:
     )
 
 
+def _prepare_staging_preview(
+    records: List[Dict[str, Any]],
+    filename: str
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Prepare staging preview data for entities and customers.
+    
+    Returns: (entity_staging_list, customer_staging_list, staging_summary)
+    """
+    customer_type = _classify_customer_type(filename)
+    entity_staging_records = []
+    customer_staging_records = []
+    entity_cache = {}
+    
+    for record in records:
+        try:
+            # Extract entity data
+            entity_name = _extract_entity_name(record)
+            if not entity_name:
+                continue
+            
+            # Extract photos
+            passport_photo, company_logo = _extract_photos(record, customer_type, include_placeholders=True)
+            
+            # Get or create entity (in-memory cache for preview)
+            cache_key = f"{entity_name}:{customer_type}"
+            if cache_key not in entity_cache:
+                entity_data = {
+                    'entity_name': entity_name,
+                    'entity_type': customer_type,
+                    'passport_photo': passport_photo,
+                    'company_logo': company_logo,
+                    'file_number': record.get('file_number'),
+                    'status': 'new'
+                }
+                entity_staging_records.append(entity_data)
+                entity_cache[cache_key] = len(entity_staging_records) - 1
+            else:
+                entity_staging_records[entity_cache[cache_key]]['status'] = 'reused'
+            
+            # Extract customer data
+            customer_name = _extract_customer_name(record, entity_name)
+            customer_code = _generate_customer_code()
+            property_address = _extract_customer_address(record)
+            
+            customer_data = {
+                'customer_name': customer_name,
+                'customer_type': customer_type,
+                'customer_code': customer_code,
+                'email': _normalize_string(record.get('email')),
+                'phone': _normalize_string(record.get('phone')),
+                'property_address': property_address,
+                'entity_name': entity_name,
+                'file_number': record.get('file_number'),
+                'has_issues': False
+            }
+            customer_staging_records.append(customer_data)
+            
+        except Exception as e:
+            logger.warning("Error preparing staging data for record: %s", str(e))
+            continue
+    
+    staging_summary = {
+        'customer_type': customer_type,
+        'entity_count': len(entity_staging_records),
+        'customer_count': len(customer_staging_records),
+        'new_entities': len([e for e in entity_staging_records if e['status'] == 'new']),
+        'existing_entities': len([e for e in entity_staging_records if e['status'] == 'reused']),
+        'duplicates_flagged': 0
+    }
+    
+    return entity_staging_records, customer_staging_records, staging_summary
+
+
 def _prepare_file_indexing_preview_payload(
     dataframe: pd.DataFrame,
     filename: str,
@@ -80,6 +164,14 @@ def _prepare_file_indexing_preview_payload(
     records = processed_df.to_dict('records')
     multiple_occurrences = analyze_file_number_occurrences(processed_df)
     logger.info("Post-processed dataframe for %s in %.3fs", filename, (datetime.utcnow() - start_time).total_seconds())
+    
+    # Prepare staging data (NEW)
+    staging_start = datetime.utcnow()
+    entity_staging_preview, customer_staging_preview, staging_summary = _prepare_staging_preview(
+        records, 
+        filename
+    )
+    logger.info("Staging preview prepared in %.3fs", (datetime.utcnow() - staging_start).total_seconds())
     
     # Skip grouping preview for large datasets to improve performance
     # Only build grouping preview for smaller uploads (< 1000 records)
@@ -127,7 +219,11 @@ def _prepare_file_indexing_preview_payload(
         "grouping_preview": grouping_preview,
         "qc_issues": qc_issues,
         "property_assignments": property_id_assignments,
-        "test_control": test_control_value
+        "test_control": test_control_value,
+        # Staging data (NEW)
+        "entity_staging_records": entity_staging_preview,
+        "customer_staging_records": customer_staging_preview,
+        "staging_summary": staging_summary
     }
 
     total_issue_count = sum(
@@ -155,7 +251,11 @@ def _prepare_file_indexing_preview_payload(
         "grouping_preview": grouping_preview,
         "qc_summary": qc_summary,
         "property_id_summary": property_id_summary,
-        "test_control": test_control_value
+        "test_control": test_control_value,
+        # Staging summary (NEW)
+        "staging_summary": staging_summary,
+        "entity_staging_preview": entity_staging_preview,
+        "customer_staging_preview": customer_staging_preview
     }
 
     logger.info(
@@ -236,7 +336,11 @@ async def get_preview_data(session_id: str):
         "grouping_preview": session_data.get("grouping_preview", {}),
         "qc_issues": session_data.get("qc_issues", {}),
         "property_assignments": session_data.get("property_assignments", []),
-        "test_control": session_data.get("test_control", 'PRODUCTION')
+        "test_control": session_data.get("test_control", 'PRODUCTION'),
+        # Staging data (NEW)
+        "staging_summary": session_data.get("staging_summary", {}),
+        "entity_staging_preview": session_data.get("entity_staging_records", []),
+        "customer_staging_preview": session_data.get("customer_staging_records", [])
     }
 
 
@@ -317,6 +421,11 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
     now = datetime.utcnow()
     source_filename = session_data.get('filename', '')
     test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
+    
+    # Staging import tracking (NEW)
+    entities_created = 0
+    customers_created = 0
+    staging_errors: List[Dict[str, Any]] = []
 
     def update_progress(current: int, total: int, message: str, batch_num: int = 0):
         if progress_key:
@@ -338,6 +447,11 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
         total_records = len(session_data["data"])
         
         update_progress(0, total_records, "Starting import...", 0)
+        
+        # NEW: Prepare staging data before main import loop
+        staging_customer_type = _classify_customer_type(source_filename)
+        import_batch = _generate_import_batch_id()
+        entity_cache: Dict[str, EntityStaging] = {}
         
         for i, record in enumerate(session_data["data"]):
             file_number = record.get('file_number', '').strip()
@@ -469,6 +583,57 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
 
             _upsert_file_number(db, file_number, record, tracking_id, source_filename, now, test_control)
             file_number_count += 1
+            
+            # NEW: Process staging records
+            try:
+                entity_name = _extract_entity_name(record)
+                if entity_name:
+                    passport_photo, company_logo = _extract_photos(record, staging_customer_type, include_placeholders=False)
+                    
+                    cache_key = f"{entity_name}:{staging_customer_type}"
+                    if cache_key not in entity_cache:
+                        entity = _get_or_create_entity(
+                            db,
+                            entity_name,
+                            staging_customer_type,
+                            file_number,
+                            passport_photo,
+                            company_logo,
+                            import_batch,
+                            created_by_value
+                        )
+                        entity_cache[cache_key] = entity
+                        entities_created += 1
+                    else:
+                        entity = entity_cache[cache_key]
+                    
+                    # Create customer staging record
+                    customer_name = _extract_customer_name(record, entity_name)
+                    customer_code = _generate_customer_code()
+                    property_address = _extract_customer_address(record)
+                    
+                    customer = CustomerStaging(
+                        customer_name=customer_name,
+                        customer_type=staging_customer_type,
+                        customer_code=customer_code,
+                        property_address=property_address,
+                        entity_id=entity.id,
+                        file_number=file_number,
+                        import_batch=import_batch,
+                        source_filename=source_filename,
+                        created_by=created_by_value,
+                        created_at=now,
+                        test_control=test_control
+                    )
+                    db.add(customer)
+                    customers_created += 1
+            except Exception as staging_error:
+                logger.warning("Staging import error for record %d: %s", i, str(staging_error))
+                staging_errors.append({
+                    'record_index': i,
+                    'file_number': file_number,
+                    'error': str(staging_error)
+                })
 
             # Update progress for each individual record
             progress_msg = f"Processing record {i + 1} of {total_records}"
@@ -498,9 +663,14 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
         "file_number_records": file_number_count,
         "grouping_summary": grouping_summary,
         "unmatched_grouping": unmatched_grouping,
+        # Staging import results (NEW)
+        "entities_staging_created": entities_created,
+        "customers_staging_created": customers_created,
+        "staging_errors": staging_errors,
         "message": (
             f"Successfully imported {imported_count} file indexing records"
             + (f" and processed {cofo_count} CofO records" if cofo_count else '')
+            + (f" and created {entities_created} entities + {customers_created} customers in staging" if entities_created or customers_created else '')
         )
     }
 

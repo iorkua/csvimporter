@@ -272,6 +272,18 @@
                                             <span class="badge bg-warning ms-1" id="qc-total-issues">0</span>
                                         </button>
                                     </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="entity-staging-tab" data-bs-toggle="tab" data-bs-target="#entity-staging-pane" type="button" role="tab" aria-controls="entity-staging-pane" aria-selected="false">
+                                            <i class="fas fa-building me-1"></i> Entity Staging
+                                            <span class="badge bg-info ms-1" id="entity-staging-count">0</span>
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="customer-staging-tab" data-bs-toggle="tab" data-bs-target="#customer-staging-pane" type="button" role="tab" aria-controls="customer-staging-pane" aria-selected="false">
+                                            <i class="fas fa-users me-1"></i> Customer Staging
+                                            <span class="badge bg-info ms-1" id="customer-staging-count">0</span>
+                                        </button>
+                                    </li>
                                 </ul>
                                 <div class="tab-content">
                                     <div class="tab-pane fade show active" id="preview-table-pane" role="tabpanel" aria-labelledby="preview-table-tab">
@@ -453,6 +465,84 @@
                                                             </div>
                                                         </div>
                                                     </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- Entity Staging Tab (NEW) -->
+                                    <div class="tab-pane fade" id="entity-staging-pane" role="tabpanel" aria-labelledby="entity-staging-tab">
+                                        <div class="p-3">
+                                            <div class="staging-preview-section mb-3">
+                                                <h5 class="section-title">
+                                                    <i class="fas fa-building me-2"></i>Entity Staging Preview
+                                                    <span class="badge badge-info" id="entity-staging-summary-count">0 entities</span>
+                                                </h5>
+                                                <div class="alert alert-info" role="alert">
+                                                    <small><strong>ℹ️ Note:</strong> Entity IDs displayed as <code>TMP-1</code>, <code>TMP-2</code>, etc. are temporary preview identifiers and will <strong>not</strong> be saved to the database; actual entity IDs will be assigned during import.</small>
+                                                </div>
+                                                <div class="table-responsive">
+                                                    <table class="table table-sm staging-table align-middle">
+                                                        <thead class="table-light">
+                                                            <tr>
+                                                                <th>Entity ID</th>
+                                                                <th>Entity Name</th>
+                                                                <th>Type</th>
+                                                                <th>Passport Photo</th>
+                                                                <th>Company Logo</th>
+                                                                <th>File Number</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody id="entity-staging-body" class="entity-staging-container">
+                                                            <!-- Filled via JavaScript -->
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <div class="staging-summary mt-3">
+                                                    <p class="mb-0">
+                                                        <strong>Summary:</strong> 
+                                                        <span id="entity-new-count">0</span> new entities • 
+                                                        <span id="entity-reused-count">0</span> reused • 
+                                                        <span id="entity-with-photos-count">0</span> with photos
+                                                    </p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- Customer Staging Tab (NEW) -->
+                                    <div class="tab-pane fade" id="customer-staging-pane" role="tabpanel" aria-labelledby="customer-staging-tab">
+                                        <div class="p-3">
+                                            <div class="staging-preview-section mb-3">
+                                                <h5 class="section-title">
+                                                    <i class="fas fa-users me-2"></i>Customer Staging Preview
+                                                    <span class="badge badge-info" id="customer-staging-summary-count">0 customers</span>
+                                                </h5>
+                                                <div class="table-responsive">
+                                                    <table class="table table-sm staging-table align-middle">
+                                                        <thead class="table-light">
+                                                            <tr>
+                                                                <th>Entity ID</th>
+                                                                <th>Customer Name</th>
+                                                                <th>Type</th>
+                                                                <th>Customer Code</th>
+                                                                <th>Email</th>
+                                                                <th>Phone</th>
+                                                                <th>Property Address</th>
+                                                                <th>Linked Entity</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody id="customer-staging-body" class="customer-staging-container">
+                                                            <!-- Filled via JavaScript -->
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                                <div class="staging-summary mt-3">
+                                                    <p class="mb-0">
+                                                        <strong>Summary:</strong> 
+                                                        <span id="customer-total-count">0</span> customers • 
+                                                        <span id="customer-with-email-count">0</span> with email • 
+                                                        <span id="customer-with-phone-count">0</span> with phone • 
+                                                        <span id="customer-with-address-count">0</span> with address
+                                                    </p>
                                                 </div>
                                             </div>
                                         </div>

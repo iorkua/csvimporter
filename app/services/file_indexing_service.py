@@ -1228,6 +1228,369 @@ def _find_existing_property_id(file_number: str) -> Optional[str]:
         db.close()
 
 
+# ============================================================================
+# STAGING IMPORT FUNCTIONS (Customer & Entity Staging)
+# ============================================================================
+
+def _classify_customer_type(filename: str) -> str:
+    """
+    Classify customer type based on filename keywords.
+    
+    Returns: 'Individual', 'Corporate', or 'Multiple'
+    """
+    if not filename:
+        return 'Individual'
+    
+    name_lower = filename.lower()
+    
+    # Check for Multiple (highest priority)
+    multiple_keywords = ['ad', 'dc', 'fg', 'dg', 'f_']
+    if any(keyword in name_lower for keyword in multiple_keywords):
+        return 'Multiple'
+    
+    # Check for Corporate
+    corporate_keywords = ['ltd', 'co', 'limited', 'enterprise', 'inc', 'corp', 'plc', 'company']
+    if any(keyword in name_lower for keyword in corporate_keywords):
+        return 'Corporate'
+    
+    # Default: Individual
+    return 'Individual'
+
+
+def _extract_entity_name(record: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract entity name with intelligent fallback chain.
+    
+    Priority: file_title → district+lga → file_number → None
+    """
+    # Priority 1: file_title (most specific)
+    file_title = _normalize_string(record.get('file_title'))
+    if file_title:
+        return file_title
+    
+    # Priority 2: Combine district + lga
+    district = _normalize_string(record.get('district'))
+    lga = _normalize_string(record.get('lga'))
+    combined = _combine_location(district, lga)
+    if combined:
+        return combined
+    
+    # Priority 3: file_number
+    file_number = _normalize_string(record.get('file_number'))
+    if file_number:
+        return f"File: {file_number}"
+    
+    # Priority 4: Cannot proceed
+    return None
+
+
+def _extract_customer_name(record: Dict[str, Any], entity_name: Optional[str] = None) -> Optional[str]:
+    """
+    Extract customer name from record.
+    
+    Priority: file_title → entity_name → created_by → generated reference
+    """
+    # Priority 1: Use file_title
+    file_title = _normalize_string(record.get('file_title'))
+    if file_title:
+        return file_title
+    
+    # Priority 2: Use entity_name if provided
+    if entity_name:
+        return entity_name
+    
+    # Priority 3: Use created_by if it looks like a name
+    created_by = _normalize_string(record.get('created_by'))
+    if created_by and len(created_by) > 2:
+        return created_by
+    
+    # Priority 4: Generate reference from file_number
+    file_number = _normalize_string(record.get('file_number'))
+    if file_number:
+        return f"Customer-{file_number}"
+    
+    return None
+
+
+def _extract_customer_address(record: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract property address from record.
+    
+    Priority: location → plot_number+lga combination
+    """
+    # Priority 1: location field
+    location = _normalize_string(record.get('location'))
+    if location:
+        return location
+    
+    # Priority 2: Combine plot_number + lga
+    plot_number = _normalize_string(record.get('plot_number'))
+    lga = _normalize_string(record.get('lga'))
+    
+    if plot_number and lga:
+        return f"{plot_number}, {lga}"
+    elif plot_number:
+        return plot_number
+    elif lga:
+        return lga
+    
+    return None
+
+
+def _is_valid_url(url_string: Optional[str]) -> bool:
+    """Check if a string is a valid URL."""
+    if not url_string:
+        return False
+    
+    url_pattern = re.compile(
+        r'^https?://'  # http:// or https://
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain
+        r'localhost|'  # localhost
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # or IP
+        r'(?::\d+)?'  # optional port
+        r'(?:/?|[/?]\S+)?$', re.IGNORECASE)
+    
+    return bool(url_pattern.match(url_string))
+
+
+def _is_valid_email(email: Optional[str]) -> bool:
+    """Check if a string is a valid email address."""
+    if not email:
+        return False
+    
+    email_pattern = re.compile(
+        r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    )
+    return bool(email_pattern.match(email))
+
+
+# Placeholder image URLs
+PLACEHOLDER_PASSPORT_PHOTO = "https://via.placeholder.com/150x200?text=Passport+Photo"
+PLACEHOLDER_COMPANY_LOGO = "https://via.placeholder.com/200x100?text=Company+Logo"
+
+
+def _extract_photos(
+    record: Dict[str, Any],
+    customer_type: str,
+    include_placeholders: bool = True
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extract passport_photo and company_logo URLs.
+    
+    Since CSV doesn't contain image data, use placeholder images for preview.
+    Photos are ONLY included for Corporate or Multiple types.
+    Individual types will have NULL photos.
+    """
+    passport_photo = None
+    company_logo = None
+    
+    # Only extract photos for non-Individual types
+    if customer_type in ['Corporate', 'Multiple']:
+        # Try to get from record (unlikely in FileIndexing)
+        passport_photo = _normalize_string(record.get('passport_photo'))
+        company_logo = _normalize_string(record.get('company_logo'))
+        
+        # Validate URLs if present
+        if passport_photo and not _is_valid_url(passport_photo):
+            logger.warning("Invalid passport_photo URL in record: %s", passport_photo)
+            passport_photo = None
+        
+        if company_logo and not _is_valid_url(company_logo):
+            logger.warning("Invalid company_logo URL in record: %s", company_logo)
+            company_logo = None
+        
+        # Use placeholders for preview if no actual URLs found
+        if include_placeholders:
+            if not passport_photo:
+                passport_photo = PLACEHOLDER_PASSPORT_PHOTO
+            if not company_logo:
+                company_logo = PLACEHOLDER_COMPANY_LOGO
+    
+    return passport_photo, company_logo
+
+
+def _generate_customer_code() -> str:
+    """Generate auto-generated customer code in format: CUST-{YYYYMMDD}-{UUID:8}"""
+    timestamp = datetime.utcnow().strftime('%Y%m%d')
+    uuid_part = str(uuid.uuid4()).replace('-', '')[:8].upper()
+    return f"CUST-{timestamp}-{uuid_part}"
+
+
+def _generate_import_batch_id() -> str:
+    """Generate import batch ID in format: IMP-{YYYYMMDD}-{UUID:8}"""
+    timestamp = datetime.utcnow().strftime('%Y%m%d')
+    uuid_part = str(uuid.uuid4()).replace('-', '')[:8].upper()
+    return f"IMP-{timestamp}-{uuid_part}"
+
+
+def _get_or_create_entity(
+    db,
+    entity_name: str,
+    customer_type: str,
+    file_number: Optional[str] = None,
+    passport_photo: Optional[str] = None,
+    company_logo: Optional[str] = None,
+    import_batch: Optional[str] = None,
+    created_by: Optional[int] = None
+):
+    """
+    Get existing entity or create new one.
+    
+    Entity lookup: entity_name + entity_type (unique index)
+    """
+    from app.models.database import EntityStaging
+    
+    # Normalize name
+    normalized_name = _normalize_string(entity_name)
+    if not normalized_name:
+        raise ValueError("Cannot create entity with empty name")
+    
+    # Try to find existing entity with same name and type
+    existing_entity = db.query(EntityStaging).filter(
+        EntityStaging.entity_name == normalized_name,
+        EntityStaging.entity_type == customer_type,
+        EntityStaging.test_control == 'PRODUCTION'
+    ).first()
+    
+    if existing_entity:
+        logger.info(
+            "Reusing existing entity: %s (id=%d)",
+            normalized_name,
+            existing_entity.id
+        )
+        return existing_entity
+    
+    # Create new entity
+    new_entity = EntityStaging(
+        entity_name=normalized_name,
+        entity_type=customer_type,
+        passport_photo=passport_photo,
+        company_logo=company_logo,
+        file_number=file_number,
+        import_batch=import_batch,
+        created_by=created_by,
+        created_at=datetime.utcnow()
+    )
+    
+    db.add(new_entity)
+    db.flush()  # Get the ID before commit
+    
+    logger.info(
+        "Created new entity: %s (id=%d)",
+        normalized_name,
+        new_entity.id
+    )
+    
+    return new_entity
+
+
+def _process_staging_import(
+    db,
+    records: List[Dict[str, Any]],
+    filename: str,
+    test_control: str = 'PRODUCTION'
+) -> Dict[str, Any]:
+    """
+    Process staging import for entities and customers.
+    """
+    from app.models.database import EntityStaging, CustomerStaging
+    
+    import_batch = _generate_import_batch_id()
+    customer_type = _classify_customer_type(filename)
+    
+    entity_summary = {
+        'new': 0,
+        'reused': 0,
+        'failed': 0
+    }
+    
+    customer_summary = {
+        'created': 0,
+        'failed': 0
+    }
+    
+    entity_cache: Dict[str, EntityStaging] = {}
+    errors: List[Dict[str, Any]] = []
+    
+    for idx, record in enumerate(records):
+        try:
+            # Step 1: Extract entity data
+            entity_name = _extract_entity_name(record)
+            if not entity_name:
+                errors.append({
+                    'record_index': idx,
+                    'type': 'missing_entity_name',
+                    'file_number': record.get('file_number')
+                })
+                continue
+            
+            # Step 2: Extract photos (nullable)
+            passport_photo, company_logo = _extract_photos(
+                record,
+                customer_type
+            )
+            
+            # Step 3: Get or create entity
+            cache_key = f"{entity_name}:{customer_type}"
+            if cache_key in entity_cache:
+                entity = entity_cache[cache_key]
+                entity_summary['reused'] += 1
+            else:
+                entity = _get_or_create_entity(
+                    db,
+                    entity_name,
+                    customer_type,
+                    record.get('file_number'),
+                    passport_photo,
+                    company_logo,
+                    import_batch,
+                    record.get('created_by')
+                )
+                entity_cache[cache_key] = entity
+                entity_summary['new'] += 1
+            
+            # Step 4: Extract customer data
+            customer_name = _extract_customer_name(record, entity_name)
+            customer_code = _generate_customer_code()
+            property_address = _extract_customer_address(record)
+            
+            # Step 5: Create customer staging record
+            customer = CustomerStaging(
+                customer_name=customer_name,
+                customer_type=customer_type,
+                customer_code=customer_code,
+                property_address=property_address,
+                entity_id=entity.id,
+                file_number=record.get('file_number'),
+                import_batch=import_batch,
+                source_filename=filename,
+                created_by=record.get('created_by'),
+                created_at=datetime.utcnow()
+            )
+            
+            db.add(customer)
+            customer_summary['created'] += 1
+            
+        except Exception as e:
+            logger.error("Error processing record %d: %s", idx, str(e))
+            entity_summary['failed'] += 1
+            errors.append({
+                'record_index': idx,
+                'type': 'processing_error',
+                'error': str(e)
+            })
+    
+    db.commit()
+    
+    return {
+        'success': len(errors) == 0,
+        'import_batch': import_batch,
+        'entity_summary': entity_summary,
+        'customer_summary': customer_summary,
+        'errors': errors
+    }
+
+
 __all__ = [
     'TRACKING_ID_PREFIX',
     '_format_value',
@@ -1256,4 +1619,16 @@ __all__ = [
     '_assign_property_ids',
     '_get_next_property_id_counter',
     '_find_existing_property_id',
+    # Staging functions
+    '_classify_customer_type',
+    '_extract_entity_name',
+    '_extract_customer_name',
+    '_extract_customer_address',
+    '_is_valid_url',
+    '_is_valid_email',
+    '_extract_photos',
+    '_generate_customer_code',
+    '_generate_import_batch_id',
+    '_get_or_create_entity',
+    '_process_staging_import',
 ]

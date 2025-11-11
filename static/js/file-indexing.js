@@ -376,6 +376,20 @@ class FileIndexingManager {
                 this.propertyAssignments = result.property_assignments || [];
             }
             
+            // Store staging data (NEW)
+            this.stagingSummary = result.staging_summary || {};
+            this.entityStagingPreview = result.entity_staging_preview || [];
+            this.customerStagingPreview = result.customer_staging_preview || [];
+            
+            // Deduplicate entities and assign TMP IDs
+            this.entityMap = this.createEntityDeduplicationMap(this.entityStagingPreview);
+            
+            // Add entity_id references to customers based on entity name + type
+            this.customerStagingPreview.forEach(customer => {
+                const entityKey = `${customer.entity_name}:${customer.customer_type}`;
+                customer.entity_id = this.entityMap[entityKey];
+            });
+            
             this.selectedRows.clear();
             this.currentPage = 1;
             
@@ -383,6 +397,8 @@ class FileIndexingManager {
             this.renderPreviewTable();
             this.renderGroupingPreview();
             this.renderQCIssues();
+            this.renderEntityStagingPreview();  // NEW
+            this.renderCustomerStagingPreview();  // NEW
             this.showSection('preview-section');
             this.updateUploadButtonState();
             
@@ -1427,6 +1443,174 @@ class FileIndexingManager {
         const newUrl = new URL(window.location);
         newUrl.searchParams.delete('session_id');
         window.history.pushState({}, '', newUrl);
+    }
+    
+    // Staging Preview Functions (NEW)
+    renderEntityStagingPreview() {
+        const tbody = document.getElementById('entity-staging-body');
+        const countBadge = document.getElementById('entity-staging-count');
+        const summaryBadge = document.getElementById('entity-staging-summary-count');
+        
+        if (!tbody || !this.entityStagingPreview) return;
+        
+        tbody.innerHTML = '';
+        
+        // Deduplicate entities: keep only the first occurrence of each name+type combo
+        const seenEntities = new Set();
+        const deduplicatedEntities = [];
+        let tmpCounter = 1;
+        
+        this.entityStagingPreview.forEach((entity, idx) => {
+            const entityKey = `${entity.entity_name}:${entity.entity_type}`;
+            
+            // Only render if we haven't seen this entity combination before
+            if (!seenEntities.has(entityKey)) {
+                seenEntities.add(entityKey);
+                
+                const typeClass = this.getTypeClass(entity.entity_type);
+                const hasPhotos = entity.passport_photo || entity.company_logo;
+                const photoMarkup = entity.entity_type !== 'Individual' 
+                    ? `<img src="${entity.passport_photo}" alt="Passport" class="staging-photo" onerror="this.src='https://via.placeholder.com/80x100?text=No+Photo'">`
+                    : '<span class="text-muted">N/A</span>';
+                const logoMarkup = entity.entity_type !== 'Individual'
+                    ? `<img src="${entity.company_logo}" alt="Logo" class="staging-photo" onerror="this.src='https://via.placeholder.com/100x50?text=No+Logo'">`
+                    : '<span class="text-muted">N/A</span>';
+                
+                // Use TMP-{counter} format for temporary IDs
+                const tmpId = `TMP-${tmpCounter}`;
+                tmpCounter++;
+                
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td class="entity-id"><code>${tmpId}</code></td>
+                    <td class="entity-name">${entity.entity_name}</td>
+                    <td><span class="badge ${typeClass}">${entity.entity_type}</span></td>
+                    <td class="photo-cell">${photoMarkup}</td>
+                    <td class="photo-cell">${logoMarkup}</td>
+                    <td>${entity.file_number || '—'}</td>
+                `;
+                tbody.appendChild(row);
+                deduplicatedEntities.push(entity);
+            }
+        });
+        
+        // Update count badges with deduplicated count
+        if (countBadge) {
+            countBadge.textContent = deduplicatedEntities.length;
+        }
+        if (summaryBadge) {
+            summaryBadge.textContent = `${deduplicatedEntities.length} entities`;
+        }
+        
+        // Update summary counts from deduplicated list
+        const newCount = deduplicatedEntities.filter(e => e.status === 'new').length;
+        const reusedCount = deduplicatedEntities.filter(e => e.status === 'reused').length;
+        const withPhotosCount = deduplicatedEntities.filter(e => e.passport_photo || e.company_logo).length;
+        
+        document.getElementById('entity-new-count').textContent = newCount;
+        document.getElementById('entity-reused-count').textContent = reusedCount;
+        document.getElementById('entity-with-photos-count').textContent = withPhotosCount;
+    }
+    
+    renderCustomerStagingPreview() {
+        const tbody = document.getElementById('customer-staging-body');
+        const countBadge = document.getElementById('customer-staging-count');
+        const summaryBadge = document.getElementById('customer-staging-summary-count');
+        
+        if (!tbody || !this.customerStagingPreview) return;
+        
+        tbody.innerHTML = '';
+        
+        this.customerStagingPreview.forEach((customer, idx) => {
+            const typeClass = this.getTypeClass(customer.customer_type);
+            const emailCell = customer.email 
+                ? `<a href="mailto:${customer.email}">${customer.email}</a>`
+                : '<span class="text-muted">—</span>';
+            const phoneCell = customer.phone
+                ? `<a href="tel:${customer.phone}">${customer.phone}</a>`
+                : '<span class="text-muted">—</span>';
+            const addressText = this.truncate(customer.property_address || 'Not specified', 40);
+            const addressCell = customer.property_address
+                ? `<span class="address-cell" title="${customer.property_address}">${addressText}</span>`
+                : '<span class="text-muted">Not specified</span>';
+            
+            // Use entity_id that was mapped during loadPreviewData
+            const displayEntityId = customer.entity_id || '—';
+            
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td class="entity-id"><code>${displayEntityId}</code></td>
+                <td class="customer-name">${customer.customer_name}</td>
+                <td><span class="badge ${typeClass}">${customer.customer_type}</span></td>
+                <td><code class="customer-code">${customer.customer_code}</code></td>
+                <td>${emailCell}</td>
+                <td>${phoneCell}</td>
+                <td>${addressCell}</td>
+                <td><span class="entity-link" title="Linked to: ${customer.entity_name}">${customer.entity_name || '—'}</span></td>
+            `;
+            tbody.appendChild(row);
+        });
+        
+        if (countBadge) {
+            countBadge.textContent = this.customerStagingPreview.length;
+        }
+        if (summaryBadge) {
+            summaryBadge.textContent = `${this.customerStagingPreview.length} customers`;
+        }
+        
+        // Update summary counts
+        const withEmailCount = this.customerStagingPreview.filter(c => c.email).length;
+        const withPhoneCount = this.customerStagingPreview.filter(c => c.phone).length;
+        const withAddressCount = this.customerStagingPreview.filter(c => c.property_address).length;
+        
+        document.getElementById('customer-total-count').textContent = this.customerStagingPreview.length;
+        document.getElementById('customer-with-email-count').textContent = withEmailCount;
+        document.getElementById('customer-with-phone-count').textContent = withPhoneCount;
+        document.getElementById('customer-with-address-count').textContent = withAddressCount;
+    }
+    
+    createEntityDeduplicationMap(entities) {
+        /**
+         * Deduplicates entities by name + type and assigns TMP IDs
+         * Returns a map: "entity_name:entity_type" => "TMP-1"
+         * 
+         * This ensures:
+         * 1. No duplicate entities in the preview
+         * 2. Each unique entity gets one sequential TMP ID
+         * 3. Customers can reference their entity via this map
+         */
+        const entityMap = {};
+        const seenEntities = new Set();
+        let tmpCounter = 1;
+        
+        // Filter out duplicates and assign TMP IDs
+        entities.forEach(entity => {
+            const entityKey = `${entity.entity_name}:${entity.entity_type}`;
+            
+            if (!seenEntities.has(entityKey)) {
+                seenEntities.add(entityKey);
+                const tmpId = `TMP-${tmpCounter}`;
+                entityMap[entityKey] = tmpId;
+                entity.tmp_id = tmpId; // Store on entity for rendering
+                tmpCounter++;
+            }
+        });
+        
+        return entityMap;
+    }
+    
+    getTypeClass(type) {
+        const classMap = {
+            'Individual': 'badge-individual',
+            'Corporate': 'badge-corporate',
+            'Multiple': 'badge-multiple'
+        };
+        return classMap[type] || 'badge-secondary';
+    }
+    
+    truncate(text, length) {
+        if (!text) return '';
+        return text.length > length ? text.substring(0, length) + '...' : text;
     }
     
     showSection(sectionId) {
