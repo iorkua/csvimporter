@@ -566,27 +566,40 @@ def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         raw_number = record.get('file_number')
         standardized = standardized_numbers[index]
 
+        registry_value = _normalize_registry(record.get('registry')) or ''
+        registry_batch_value = _normalize_string(record.get('registry_batch_no')) or ''
+        csv_batch_value = _normalize_string(record.get('batch_no')) or ''
+
         if not standardized:
             summary['missing'] += 1
             rows.append({
                 'file_number': raw_number,
                 'normalized_file_number': None,
+                'registry': registry_value,
+                'registry_batch_no': registry_batch_value,
+                'csv_batch_no': csv_batch_value,
                 'status': 'missing',
                 'reason': 'File number is blank',
                 'grouping_registry': None,
                 'grouping_number': None,
                 'awaiting_fileno': None,
                 'group': None,
-                'sys_batch_no': None
+                'sys_batch_no': None,
+                'mdc_batch_no': None,
+                'awaiting_normalized': None
             })
             continue
 
         grouping_row = grouping_map.get(standardized)
         if grouping_row:
+            grouping_registry_batch = _normalize_string(getattr(grouping_row, 'registry_batch_no', None)) or ''
             summary['matched'] += 1
             rows.append({
                 'file_number': raw_number,
                 'normalized_file_number': standardized,
+                'registry': registry_value,
+                'registry_batch_no': registry_batch_value or grouping_registry_batch,
+                'csv_batch_no': csv_batch_value,
                 'status': 'matched',
                 'reason': '',
                 'grouping_registry': grouping_row.registry,
@@ -594,13 +607,17 @@ def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
                 'awaiting_fileno': grouping_row.awaiting_fileno,
                 'awaiting_normalized': _standardize_file_number(grouping_row.awaiting_fileno),
                 'group': grouping_row.group,
-                'sys_batch_no': grouping_row.sys_batch_no
+                'sys_batch_no': grouping_row.sys_batch_no,
+                'mdc_batch_no': _normalize_string(getattr(grouping_row, 'mdc_batch_no', None)) or ''
             })
         else:
             summary['missing'] += 1
             rows.append({
                 'file_number': raw_number,
                 'normalized_file_number': standardized,
+                'registry': registry_value,
+                'registry_batch_no': registry_batch_value,
+                'csv_batch_no': csv_batch_value,
                 'status': 'missing',
                 'reason': 'Awaiting file number not found in grouping table',
                 'grouping_registry': None,
@@ -608,7 +625,8 @@ def _build_grouping_preview(records: List[Dict[str, Any]]) -> Dict[str, Any]:
                 'awaiting_fileno': None,
                 'awaiting_normalized': None,
                 'group': None,
-                'sys_batch_no': None
+                'sys_batch_no': None,
+                'mdc_batch_no': None
             })
 
     return {
@@ -1232,28 +1250,81 @@ def _find_existing_property_id(file_number: str) -> Optional[str]:
 # STAGING IMPORT FUNCTIONS (Customer & Entity Staging)
 # ============================================================================
 
-def _classify_customer_type(filename: str) -> str:
+def _classify_customer_type(descriptor: Optional[str]) -> str:
     """
-    Classify customer type based on filename keywords.
-    
-    Returns: 'Individual', 'Corporate', or 'Multiple'
+    Classify customer/entity type using heuristics on the provided descriptor.
+
+    The descriptor can be a file title, entity name, or filename. We prioritise
+    detecting corporate entities first (keywords like LTD, PLC, COMPANY, etc.).
+    If we see clear signs of multiple distinct people (comma or "and" delimited
+    list) we classify as "Multiple". Otherwise we fall back to "Individual".
     """
-    if not filename:
+    if not descriptor:
         return 'Individual'
-    
-    name_lower = filename.lower()
-    
-    # Check for Multiple (highest priority)
-    multiple_keywords = ['ad', 'dc', 'fg', 'dg', 'f_']
-    if any(keyword in name_lower for keyword in multiple_keywords):
-        return 'Multiple'
-    
-    # Check for Corporate
-    corporate_keywords = ['ltd', 'co', 'limited', 'enterprise', 'inc', 'corp', 'plc', 'company']
-    if any(keyword in name_lower for keyword in corporate_keywords):
+
+    text = descriptor.strip()
+    if not text:
+        return 'Individual'
+
+    lowered = text.lower()
+    normalized_for_tokens = re.sub(r'[^a-z0-9]+', ' ', lowered)
+
+    corporate_substrings = (
+        ' limited',
+        ' ltd',
+        ' plc',
+        ' inc',
+        ' corp',
+        ' company',
+        ' co ',
+        ' enterprises',
+        ' enterprise',
+        ' industries',
+        ' industry',
+        ' services',
+        ' ventures',
+        ' trading',
+        ' logistics',
+        ' haulage',
+        ' petroleum',
+        ' engineering',
+        ' hospital',
+        ' clinic',
+        ' foundation',
+        ' holdings',
+        ' resources',
+        ' technologies',
+        ' partners',
+        ' associates',
+        ' investments',
+        ' investment',
+    )
+
+    # Quick substring check using a sanitised version that keeps the original spacing
+    lowered_compact = lowered.replace('.', ' ').replace('&', ' ').replace('/', ' ')
+    lowered_with_padding = f" {re.sub(r'\s+', ' ', lowered_compact)} "
+    for keyword in corporate_substrings:
+        if keyword in lowered_with_padding:
+            return 'Corporate'
+
+    token_set = set(normalized_for_tokens.split())
+    corporate_tokens = {
+        'ltd', 'limited', 'plc', 'inc', 'corp', 'company', 'enterprises', 'enterprise',
+        'group', 'holdings', 'industries', 'industry', 'services', 'ventures', 'logistics',
+        'haulage', 'petroleum', 'engineering', 'hospital', 'clinic', 'foundation',
+        'resources', 'technologies', 'partners', 'associates', 'investments', 'investment',
+        'agency', 'firm', 'consult', 'consulting', 'consultants'
+    }
+    if token_set & corporate_tokens:
         return 'Corporate'
-    
-    # Default: Individual
+
+    # Detect multiple individual names (comma separated, ampersand, or "and")
+    if re.search(r',', text) or re.search(r'\band\b', lowered) or re.search(r'\s&\s', text):
+        segments = re.split(r',|\band\b|\s&\s', text, flags=re.IGNORECASE)
+        non_empty_segments = [segment.strip() for segment in segments if segment and segment.strip()]
+        if len(non_empty_segments) >= 2:
+            return 'Multiple'
+
     return 'Individual'
 
 
@@ -1275,8 +1346,13 @@ def _extract_entity_name(record: Dict[str, Any]) -> Optional[str]:
     if combined:
         return combined
     
-    # Priority 3: file_number
-    file_number = _normalize_string(record.get('file_number'))
+    # Priority 3: file_number (include alternate field names used by other imports)
+    file_number = _normalize_string(
+        record.get('file_number')
+        or record.get('mlsFNo')
+        or record.get('fileno')
+        or record.get('fileNumber')
+    )
     if file_number:
         return f"File: {file_number}"
     
@@ -1305,7 +1381,12 @@ def _extract_customer_name(record: Dict[str, Any], entity_name: Optional[str] = 
         return created_by
     
     # Priority 4: Generate reference from file_number
-    file_number = _normalize_string(record.get('file_number'))
+    file_number = _normalize_string(
+        record.get('file_number')
+        or record.get('mlsFNo')
+        or record.get('fileno')
+        or record.get('fileNumber')
+    )
     if file_number:
         return f"Customer-{file_number}"
     
@@ -1430,8 +1511,7 @@ def _get_or_create_entity(
     file_number: Optional[str] = None,
     passport_photo: Optional[str] = None,
     company_logo: Optional[str] = None,
-    import_batch: Optional[str] = None,
-    created_by: Optional[int] = None
+    test_control: str = 'PRODUCTION'
 ):
     """
     Get existing entity or create new one.
@@ -1449,7 +1529,7 @@ def _get_or_create_entity(
     existing_entity = db.query(EntityStaging).filter(
         EntityStaging.entity_name == normalized_name,
         EntityStaging.entity_type == customer_type,
-        EntityStaging.test_control == 'PRODUCTION'
+        EntityStaging.test_control == test_control
     ).first()
     
     if existing_entity:
@@ -1467,9 +1547,8 @@ def _get_or_create_entity(
         passport_photo=passport_photo,
         company_logo=company_logo,
         file_number=file_number,
-        import_batch=import_batch,
-        created_by=created_by,
-        created_at=datetime.utcnow()
+        created_at=datetime.utcnow(),
+        test_control=test_control
     )
     
     db.add(new_entity)
@@ -1495,9 +1574,6 @@ def _process_staging_import(
     """
     from app.models.database import EntityStaging, CustomerStaging
     
-    import_batch = _generate_import_batch_id()
-    customer_type = _classify_customer_type(filename)
-    
     entity_summary = {
         'new': 0,
         'reused': 0,
@@ -1511,6 +1587,20 @@ def _process_staging_import(
     
     entity_cache: Dict[str, EntityStaging] = {}
     errors: List[Dict[str, Any]] = []
+
+    def safe_int_conversion(value: Any) -> Optional[int]:
+        """Convert possible numeric values to int, otherwise None."""
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        try:
+            str_value = str(value).strip()
+            if not str_value:
+                return None
+            return int(str_value)
+        except (ValueError, TypeError):
+            return None
     
     for idx, record in enumerate(records):
         try:
@@ -1524,12 +1614,22 @@ def _process_staging_import(
                 })
                 continue
             
+            descriptor = (
+                _normalize_string(record.get('file_title'))
+                or entity_name
+                or _normalize_string(record.get('customer_name'))
+                or filename
+            )
+            customer_type = _classify_customer_type(descriptor)
+
             # Step 2: Extract photos (nullable)
             passport_photo, company_logo = _extract_photos(
                 record,
                 customer_type
             )
             
+            file_number_value = _normalize_string(record.get('file_number'))
+
             # Step 3: Get or create entity
             cache_key = f"{entity_name}:{customer_type}"
             if cache_key in entity_cache:
@@ -1540,11 +1640,10 @@ def _process_staging_import(
                     db,
                     entity_name,
                     customer_type,
-                    record.get('file_number'),
+                    file_number_value,
                     passport_photo,
                     company_logo,
-                    import_batch,
-                    record.get('created_by')
+                    test_control
                 )
                 entity_cache[cache_key] = entity
                 entity_summary['new'] += 1
@@ -1553,6 +1652,26 @@ def _process_staging_import(
             customer_name = _extract_customer_name(record, entity_name)
             customer_code = _generate_customer_code()
             property_address = _extract_customer_address(record)
+
+            created_by_value = safe_int_conversion(record.get('created_by'))
+            
+            # Step 4b: Extract reason_retired from transaction_type
+            transaction_type = _normalize_string(record.get('transaction_type'))
+            reason_retired = None
+            if transaction_type:
+                # Map transaction types to reason_retired
+                reason_mapping = {
+                    'revoked': 'Revoked',
+                    'assignment': 'Assignment',
+                    'power of attorney': 'Power of Attorney',
+                    'surrender': 'Surrender',
+                    'mortgage': 'Mortgage',
+                }
+                lower_type = transaction_type.lower()
+                for key, value in reason_mapping.items():
+                    if key in lower_type:
+                        reason_retired = value
+                        break
             
             # Step 5: Create customer staging record
             customer = CustomerStaging(
@@ -1561,11 +1680,12 @@ def _process_staging_import(
                 customer_code=customer_code,
                 property_address=property_address,
                 entity_id=entity.id,
-                file_number=record.get('file_number'),
-                import_batch=import_batch,
-                source_filename=filename,
-                created_by=record.get('created_by'),
-                created_at=datetime.utcnow()
+                created_by=created_by_value,
+                created_at=datetime.utcnow(),
+                test_control=test_control,
+                file_number=file_number_value,
+                account_no=file_number_value,
+                reason_retired=reason_retired
             )
             
             db.add(customer)
@@ -1584,7 +1704,6 @@ def _process_staging_import(
     
     return {
         'success': len(errors) == 0,
-        'import_batch': import_batch,
         'entity_summary': entity_summary,
         'customer_summary': customer_summary,
         'errors': errors

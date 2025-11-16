@@ -38,6 +38,11 @@ from app.services.file_indexing_service import (
     _generate_tracking_id,
     _run_qc_validation,
 )
+from app.services.staging_handler import (
+    extract_entity_and_customer_data,
+    build_staging_preview,
+    perform_staging_import,
+)
 from app.routers.file_indexing import router as file_indexing_router
 
 
@@ -136,7 +141,8 @@ def process_file_indexing_data(df):
         'page_no': ['Page No', 'PageNo', 'Page Number'],
         'vol_no': ['Vol No', 'VolNo', 'Volume No', 'Volume Number'],
         'deeds_time': ['Deeds Time', 'DeedsTime'],
-        'deeds_date': ['Deeds Date', 'DeedsDate']
+        'deeds_date': ['Deeds Date', 'DeedsDate'],
+        'created_by': ['Created By', 'CreatedBy', 'Created_By']
     }
 
     standardized_df = pd.DataFrame()
@@ -1273,6 +1279,15 @@ async def upload_file_history(test_control: str = Form(...), file: UploadFile = 
         # Format dates for UI preview
         _apply_ui_date_format_to_session_records(property_records, cofo_records)
 
+        # ✅ NEW: Extract staging data (entity and customer)
+        entity_records, customer_records, staging_summary = extract_entity_and_customer_data(
+            property_records,
+            file.filename,
+            mode,
+            transaction_type_field='transaction_type',
+            source='file_history'
+        )
+
         app.sessions[session_id] = {
             "filename": file.filename,
             "upload_time": datetime.now(),
@@ -1281,7 +1296,11 @@ async def upload_file_history(test_control: str = Form(...), file: UploadFile = 
             "property_records": property_records,
             "cofo_records": cofo_records,
             "qc_issues": qc_issues,
-            "duplicates": duplicates
+            "duplicates": duplicates,
+            # ✅ NEW: Store staging data
+            "entity_staging_records": entity_records,
+            "customer_staging_records": customer_records,
+            "staging_summary": staging_summary
         }
 
         return {
@@ -1295,7 +1314,11 @@ async def upload_file_history(test_control: str = Form(...), file: UploadFile = 
             "cofo_records": cofo_records,
             "duplicates": duplicates,
             "issues": qc_issues,
-            "test_control": mode
+            "test_control": mode,
+            # ✅ NEW: Include staging in response
+            "staging_summary": staging_summary,
+            "entity_staging_preview": entity_records,
+            "customer_staging_preview": customer_records
         }
 
     except HTTPException:
@@ -1477,7 +1500,16 @@ async def import_file_history(session_id: str):
 
             cofo_records_count += 1
 
-        
+        # Import staging data (entities and customers with reason_retired)
+        staging_result = perform_staging_import(
+            db,
+            session_data.get('property_records', []),
+            session_data.get('filename', 'file_history_upload.csv'),
+            session_data.get('test_control', 'PRODUCTION'),
+            'transaction_type',
+            source='file_history'
+        )
+
         db.commit()
 
         del app.sessions[session_id]
@@ -1487,6 +1519,11 @@ async def import_file_history(session_id: str):
             "imported_count": property_records_count + cofo_records_count,
             "property_records_count": property_records_count,
             "cofo_records_count": cofo_records_count,
+            "staging_import": {
+                "entity_summary": staging_result.get('entity_summary', {}),
+                "customer_summary": staging_result.get('customer_summary', {}),
+                "errors": staging_result.get('errors', [])
+            },
             "test_control": mode
         }
 
@@ -1611,6 +1648,15 @@ async def upload_pic(test_control: str = Form(...), file: UploadFile = File(...)
         # Format dates for UI preview
         _apply_ui_date_format_to_session_records(property_records, cofo_records, file_number_records)
 
+        # Extract staging data (entities and customers with reason_retired)
+        entity_records, customer_records, staging_summary = extract_entity_and_customer_data(
+            property_records,
+            file.filename,
+            mode,
+            transaction_type_field='transaction_type',
+            source='pic'
+        )
+
         app.sessions[session_id] = {
             "filename": file.filename,
             "upload_time": datetime.now(),
@@ -1620,7 +1666,10 @@ async def upload_pic(test_control: str = Form(...), file: UploadFile = File(...)
             "cofo_records": cofo_records,
             "file_number_records": file_number_records,
             "qc_issues": qc_issues,
-            "property_assignments": assignments
+            "property_assignments": assignments,
+            "entity_staging_records": entity_records,
+            "customer_staging_records": customer_records,
+            "staging_summary": staging_summary
         }
 
         return {
@@ -1634,7 +1683,10 @@ async def upload_pic(test_control: str = Form(...), file: UploadFile = File(...)
             "cofo_records": cofo_records,
             "file_number_records": file_number_records,
             "issues": qc_issues,
-            "property_assignments": assignments
+            "property_assignments": assignments,
+            "staging_summary": staging_summary,
+            "entity_staging_preview": entity_records,
+            "customer_staging_preview": customer_records
         }
 
     except HTTPException:
@@ -1848,6 +1900,16 @@ async def import_pic(session_id: str):
 
             cofo_records_count += 1
 
+        # Import staging data (entities and customers with reason_retired)
+        staging_result = perform_staging_import(
+            db,
+            session_data.get('property_records', []),
+            session_data.get('filename', 'pic_upload.csv'),
+            test_control,
+            'transaction_type',
+            source='pic'
+        )
+
         db.commit()
 
         del app.sessions[session_id]
@@ -1857,6 +1919,11 @@ async def import_pic(session_id: str):
             "imported_count": property_records_count + cofo_records_count,
             "property_records_count": property_records_count,
             "cofo_records_count": cofo_records_count,
+            "staging_import": {
+                "entity_summary": staging_result.get('entity_summary', {}),
+                "customer_summary": staging_result.get('customer_summary', {}),
+                "errors": staging_result.get('errors', [])
+            },
             "test_control": test_control
         }
 
@@ -2289,6 +2356,15 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             'file_numbers': duplicates_file
         }
 
+        # Extract staging data (entities and customers with reason_retired)
+        entity_records, customer_records, staging_summary = extract_entity_and_customer_data(
+            property_records,
+            file.filename,
+            mode,
+            transaction_type_field='transaction_type',
+            source='pra'
+        )
+
         if not hasattr(app, 'sessions'):
             app.sessions = {}
 
@@ -2302,7 +2378,10 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             "duplicates": duplicates,
             "file_number_qc": qc_rows,
             "qc_summary": qc_summary,
-            "qc_issues_raw": qc_issues_raw
+            "qc_issues_raw": qc_issues_raw,
+            "entity_staging_records": entity_records,
+            "customer_staging_records": customer_records,
+            "staging_summary": staging_summary
         }
 
         # Calculate statistics
@@ -2328,6 +2407,9 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             "duplicates": duplicates,
             "file_number_qc": qc_rows,
             "qc_summary": qc_summary,
+            "staging_summary": staging_summary,
+            "entity_staging_preview": entity_records,
+            "customer_staging_preview": customer_records,
             "test_control": mode
         }
 
@@ -2362,6 +2444,16 @@ async def import_pra(session_id: str):
             _import_property_record(db, record, now, staging_table='pra')
             property_records_count += 1
 
+        # Import staging data (entities and customers with reason_retired)
+        staging_result = perform_staging_import(
+            db,
+            session_data.get('property_records', []),
+            session_data.get('filename', 'pra_upload.csv'),
+            test_control,
+            'transaction_type',
+            source='pra'
+        )
+
         db.commit()
 
         # Clean up session
@@ -2371,6 +2463,11 @@ async def import_pra(session_id: str):
             "success": True,
             "imported_count": property_records_count,
             "property_records_count": property_records_count,
+            "staging_import": {
+                "entity_summary": staging_result.get('entity_summary', {}),
+                "customer_summary": staging_result.get('customer_summary', {}),
+                "errors": staging_result.get('errors', [])
+            },
             "test_control": test_control
         }
 

@@ -4,12 +4,15 @@ class PRAImportManager {
         this.propertyRecordsData = [];
         this.fileNumbersData = [];
         this.fileNumberQcData = [];
+        this.entityStagingRecords = [];
+        this.customerStagingRecords = [];
+        this.stagingSummary = {};
         this.filteredData = [];
         this.currentPage = 1;
         this.itemsPerPage = 20;
         this.sessionId = null;
         this.currentFilter = 'all'; // 'all', 'issues', 'valid'
-        this.currentTab = 'property-records'; // 'property-records', 'file-numbers', 'file-number-qc'
+        this.currentTab = 'property-records'; // 'property-records', 'file-numbers', 'file-number-qc', 'entities', 'customers'
         this.duplicates = {
             csv: [],
             database: []
@@ -37,9 +40,14 @@ class PRAImportManager {
         this.testControlMode = this.testControlSelect?.value && this.testControlSelect.value !== ''
             ? this.testControlSelect.value.toUpperCase()
             : '';
+        this.filterButtons = document.getElementById('praFilterButtons');
+        this.selectionGroup = document.getElementById('praSelectionGroup');
+        this.bulkActionsGroup = document.getElementById('praBulkActionsGroup');
+        this.validateGroup = document.getElementById('praValidateGroup');
         
         this.updateModeBadge();
         this.initializeEventListeners();
+        this.switchTab(this.currentTab);
         this.updateModeControls();
     }
 
@@ -65,6 +73,8 @@ class PRAImportManager {
         document.getElementById('property-records-tab')?.addEventListener('click', () => this.switchTab('property-records'));
         document.getElementById('file-numbers-tab')?.addEventListener('click', () => this.switchTab('file-numbers'));
         document.getElementById('file-number-qc-tab')?.addEventListener('click', () => this.switchTab('file-number-qc'));
+        document.getElementById('pra-entities-tab')?.addEventListener('click', () => this.switchTab('entities'));
+        document.getElementById('pra-customers-tab')?.addEventListener('click', () => this.switchTab('customers'));
 
         // Action buttons
         document.getElementById('selectAllBtn')?.addEventListener('click', () => this.selectAll());
@@ -230,10 +240,14 @@ class PRAImportManager {
             this.propertyRecordsData = result.property_records || [];
             this.fileNumbersData = result.file_numbers || [];
             this.fileNumberQcData = result.file_number_qc || [];
+            this.entityStagingRecords = result.entity_staging_preview || [];
+            this.customerStagingRecords = result.customer_staging_preview || [];
+            this.stagingSummary = result.staging_summary || {};
             this.duplicates = result.duplicates || { csv: [], database: [] };
             this.qcSummary = result.qc_summary || this.qcSummary;
             
             this.updateStatistics(result);
+            this.updateStagingDisplay();
             this.showDuplicates();
             this.applyFilter();
             this.showPreviewSection();
@@ -288,10 +302,226 @@ class PRAImportManager {
         this.updateModeControls();
     }
 
+    updateStagingDisplay() {
+        const entityCount = Array.isArray(this.entityStagingRecords) ? this.entityStagingRecords.length : 0;
+        const customerCount = Array.isArray(this.customerStagingRecords) ? this.customerStagingRecords.length : 0;
+        const reasonRetiredCount = Array.isArray(this.customerStagingRecords)
+            ? this.customerStagingRecords.filter((record) => this.sanitizeValue(record.reason_retired ?? record.reasonRetired)).length
+            : 0;
+
+        this.updateElementText('praStagingEntityCountDisplay', entityCount);
+        this.updateElementText('praStagingCustomerCountDisplay', customerCount);
+        this.updateElementText('praStagingReasonRetiredCount', reasonRetiredCount);
+        this.updateElementText('praEntitiesCount', entityCount);
+        this.updateElementText('praCustomersCount', customerCount);
+
+        this.renderPraEntitiesTable();
+        this.renderPraCustomersTable();
+    }
+
     switchTab(tabName) {
+        if (!tabName) {
+            return;
+        }
+
         this.currentTab = tabName;
         this.currentPage = 1;
-        this.applyFilter();
+
+        const tableTabs = ['property-records', 'file-numbers'];
+        const filterVisible = tableTabs.includes(tabName);
+        const selectionVisible = tableTabs.includes(tabName);
+        const bulkVisible = tableTabs.includes(tabName);
+        const validateVisible = tableTabs.includes(tabName);
+
+        if (this.filterButtons) {
+            this.filterButtons.style.display = filterVisible ? 'inline-flex' : 'none';
+        }
+        if (this.selectionGroup) {
+            this.selectionGroup.style.display = selectionVisible ? 'inline-flex' : 'none';
+        }
+        if (this.bulkActionsGroup) {
+            this.bulkActionsGroup.style.display = bulkVisible ? 'inline-flex' : 'none';
+        }
+        if (this.validateGroup) {
+            this.validateGroup.style.display = validateVisible ? 'inline-flex' : 'none';
+        }
+
+        const paginationElement = document.getElementById('pagination');
+        const paginationRow = paginationElement?.closest('.d-flex');
+        if (paginationElement) {
+            paginationElement.style.display = '';
+        }
+        if (paginationRow) {
+            paginationRow.style.display = ['entities', 'customers'].includes(tabName) ? 'none' : 'flex';
+        }
+
+        if (tabName === 'file-number-qc') {
+            this.filteredData = Array.isArray(this.fileNumberQcData) ? [...this.fileNumberQcData] : [];
+            this.renderTable();
+            this.renderPagination();
+        } else if (tableTabs.includes(tabName)) {
+            this.applyFilter();
+        } else {
+            this.filteredData = [];
+            this.updateShowingInfo();
+        }
+
+        this.updateStagingDisplay();
+    }
+
+    updateElementText(elementId, value) {
+        const element = document.getElementById(elementId);
+        if (!element) {
+            return;
+        }
+
+        if (typeof value === 'number') {
+            element.textContent = Number.isFinite(value) ? value.toString() : '0';
+            return;
+        }
+
+        if (value === null || value === undefined || value === '') {
+            element.textContent = '';
+            return;
+        }
+
+        element.textContent = value;
+    }
+
+    normalizeFileNumber(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+        return String(value).replace(/\s+/g, '').toUpperCase();
+    }
+
+    entityNameLooksLikeFile(name, fileNumber) {
+        if (!name) {
+            return false;
+        }
+        const normalizedName = this.normalizeFileNumber(name.replace(/^file[:\-\s]*/i, ''));
+        const normalizedFile = this.normalizeFileNumber(fileNumber);
+        if (normalizedFile && normalizedName === normalizedFile) {
+            return true;
+        }
+        return /^file[:\-\s]/i.test(name);
+    }
+
+    getPraEntityDisplayName(entity) {
+        const rawName = this.sanitizeValue(entity?.entity_name ?? entity?.name);
+        const fileNumber = this.sanitizeValue(entity?.file_number ?? entity?.fileNumber ?? entity?.mlsFNo);
+        if (rawName && !this.entityNameLooksLikeFile(rawName, fileNumber)) {
+            return rawName;
+        }
+
+        const entityId = this.sanitizeValue(entity?.entity_id ?? entity?.entityId);
+        const matchingCustomer = this.customerStagingRecords.find((customer) => {
+            const customerEntityId = this.sanitizeValue(customer?.entity_id ?? customer?.entityId);
+            if (entityId && customerEntityId && entityId === customerEntityId) {
+                return true;
+            }
+            const customerFile = this.sanitizeValue(customer?.file_number ?? customer?.mlsFNo ?? customer?.fileNumber);
+            return Boolean(fileNumber) && customerFile === fileNumber;
+        });
+
+        const fallback = this.sanitizeValue(matchingCustomer?.customer_name ?? matchingCustomer?.name);
+        if (fallback) {
+            return fallback;
+        }
+
+        return rawName || fileNumber;
+    }
+
+    renderPraEntitiesTable() {
+        const wrapper = document.getElementById('praEntitiesTableWrapper');
+        const tbody = document.getElementById('praEntitiesTableBody');
+        const emptyState = document.getElementById('praEntitiesEmpty');
+
+        if (!wrapper || !tbody || !emptyState) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+
+        if (!this.entityStagingRecords.length) {
+            wrapper.style.display = 'none';
+            emptyState.classList.remove('d-none');
+            return;
+        }
+
+        emptyState.classList.add('d-none');
+
+        this.entityStagingRecords.forEach((entity, index) => {
+            const entityName = this.getPraEntityDisplayName(entity);
+            const entityType = this.sanitizeValue(entity.entity_type ?? entity.entityType);
+            const statusRaw = this.sanitizeValue(entity.status) || 'new';
+            const status = statusRaw.toLowerCase();
+            const statusLabel = statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1);
+            const entityId = this.sanitizeValue(entity.entity_id ?? entity.entityId);
+            const fileNumber = this.sanitizeValue(entity.file_number ?? entity.fileNumber ?? entity.mlsFNo);
+            const statusClass = status === 'new' ? 'badge bg-primary' : 'badge bg-info text-dark';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${entityId ? `<code>${this.escapeHtml(entityId)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${fileNumber ? `<code>${this.escapeHtml(fileNumber)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${entityType ? `<span class="badge bg-secondary">${this.escapeHtml(entityType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${entityName ? this.escapeHtml(entityName) : '<span class="text-muted">—</span>'}</td>
+                <td><span class="${statusClass}">${this.escapeHtml(statusLabel)}</span></td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        wrapper.style.display = 'block';
+    }
+
+    renderPraCustomersTable() {
+        const wrapper = document.getElementById('praCustomersTableWrapper');
+        const tbody = document.getElementById('praCustomersTableBody');
+        const emptyState = document.getElementById('praCustomersEmpty');
+
+        if (!wrapper || !tbody || !emptyState) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+
+        if (!this.customerStagingRecords.length) {
+            wrapper.style.display = 'none';
+            emptyState.classList.remove('d-none');
+            return;
+        }
+
+        emptyState.classList.add('d-none');
+
+        this.customerStagingRecords.forEach((customer, index) => {
+            const entityId = this.sanitizeValue(customer.entity_id ?? customer.entityId);
+            const fileNumber = this.sanitizeValue(customer.file_number ?? customer.mlsFNo ?? customer.fileNumber);
+            const customerName = this.sanitizeValue(customer.customer_name ?? customer.name);
+            const customerType = this.sanitizeValue(customer.customer_type ?? customer.type);
+            const retiredBy = this.sanitizeValue(customer.reason_by ?? customer.reasonBy ?? customer.grantor_assignor ?? customer.grantor);
+            const reasonRetired = this.sanitizeValue(customer.reason_retired ?? customer.reasonRetired);
+            const address = this.sanitizeValue(customer.property_address ?? customer.propertyDescription ?? customer.address);
+            const reasonBadge = reasonRetired
+                ? `<span class="badge bg-warning text-dark">${this.escapeHtml(reasonRetired)}</span>`
+                : '<span class="text-muted">—</span>';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${entityId ? `<code>${this.escapeHtml(entityId)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${fileNumber ? `<code>${this.escapeHtml(fileNumber)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${customerName ? this.escapeHtml(customerName) : '<span class="text-muted">—</span>'}</td>
+                <td>${customerType ? `<span class="badge bg-secondary">${this.escapeHtml(customerType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${retiredBy ? this.escapeHtml(retiredBy) : '<span class="text-muted">—</span>'}</td>
+                <td>${reasonBadge}</td>
+                <td>${address ? this.escapeHtml(address) : '<span class="text-muted">—</span>'}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        wrapper.style.display = 'block';
     }
 
     showDuplicates() {
@@ -381,21 +611,34 @@ class PRAImportManager {
     }
 
     applyFilter() {
-        // Get data based on current tab
+        if (this.currentTab === 'file-number-qc') {
+            this.filteredData = Array.isArray(this.fileNumberQcData) ? [...this.fileNumberQcData] : [];
+            this.renderTable();
+            this.renderPagination();
+            return;
+        }
+
+        if (!['property-records', 'file-numbers'].includes(this.currentTab)) {
+            this.filteredData = [];
+            this.updateShowingInfo();
+            this.renderPagination();
+            return;
+        }
+
         const sourceData = this.currentTab === 'property-records' ? this.propertyRecordsData : this.fileNumbersData;
-        
+
         switch (this.currentFilter) {
             case 'issues':
-                this.filteredData = sourceData.filter(record => record.hasIssues);
+                this.filteredData = sourceData.filter((record) => record.hasIssues);
                 break;
             case 'valid':
-                this.filteredData = sourceData.filter(record => !record.hasIssues);
+                this.filteredData = sourceData.filter((record) => !record.hasIssues);
                 break;
             default:
                 this.filteredData = [...sourceData];
                 break;
         }
-        
+
         this.renderTable();
         this.renderPagination();
     }
@@ -1071,6 +1314,10 @@ class PRAImportManager {
         const { keepMode = false, keepFileInput = false } = options;
         this.propertyRecordsData = [];
         this.fileNumbersData = [];
+        this.fileNumberQcData = [];
+        this.entityStagingRecords = [];
+        this.customerStagingRecords = [];
+        this.stagingSummary = {};
         this.filteredData = [];
         this.sessionId = null;
         this.duplicates = { csv: [], database: [] };
@@ -1111,6 +1358,7 @@ class PRAImportManager {
             this.importButton.dataset.readyCount = '0';
         }
 
+        this.switchTab('property-records');
         this.updateModeControls();
     }
 
@@ -1300,6 +1548,17 @@ class PRAImportManager {
             this.renderPagination();
             this.showAlert(`${indicesToDelete.length} records deleted successfully`, 'success');
         }
+    }
+
+    escapeHtml(text) {
+        const map = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#039;'
+        };
+        return String(text || '').replace(/[&<>"']/g, (char) => map[char]);
     }
 }
 

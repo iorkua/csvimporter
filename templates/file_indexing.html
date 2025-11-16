@@ -133,7 +133,7 @@
                                                     Clear Selected Data
                                                 </button>
                                             </div>
-                                            <small class="text-muted">Choose <strong>TEST</strong> when rehearsing uploads; choose <strong>PRODUCTION</strong> for live data.</small>
+                                            <small class="text-muted">Choose <strong>TEST</strong> when rehearsing uploads; select <strong>PRODUCTION</strong> for live imports.</small>
                                         </div>
 
                                         <div class="mb-3">
@@ -262,26 +262,26 @@
                                         </button>
                                     </li>
                                     <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="grouping-preview-tab" data-bs-toggle="tab" data-bs-target="#grouping-preview-pane" type="button" role="tab" aria-controls="grouping-preview-pane" aria-selected="false">
-                                            <i class="fas fa-layer-group me-1"></i> Grouping Match Preview
-                                        </button>
-                                    </li>
-                                    <li class="nav-item" role="presentation">
                                         <button class="nav-link" id="qc-issues-tab" data-bs-toggle="tab" data-bs-target="#qc-issues-pane" type="button" role="tab" aria-controls="qc-issues-pane" aria-selected="false">
                                             <i class="fas fa-shield-alt me-1"></i> QC Issues
                                             <span class="badge bg-warning ms-1" id="qc-total-issues">0</span>
                                         </button>
                                     </li>
                                     <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="entity-staging-tab" data-bs-toggle="tab" data-bs-target="#entity-staging-pane" type="button" role="tab" aria-controls="entity-staging-pane" aria-selected="false">
-                                            <i class="fas fa-building me-1"></i> Entity Staging
-                                            <span class="badge bg-info ms-1" id="entity-staging-count">0</span>
+                                        <button class="nav-link" id="cofo-preview-tab" data-bs-toggle="tab" data-bs-target="#cofo-preview-pane" type="button" role="tab" aria-controls="cofo-preview-pane" aria-selected="false">
+                                            <i class="fas fa-file-contract me-1"></i> CofO Preview
+                                            <span class="badge bg-secondary ms-1" id="cofo-preview-count">0</span>
                                         </button>
                                     </li>
                                     <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="customer-staging-tab" data-bs-toggle="tab" data-bs-target="#customer-staging-pane" type="button" role="tab" aria-controls="customer-staging-pane" aria-selected="false">
-                                            <i class="fas fa-users me-1"></i> Customer Staging
-                                            <span class="badge bg-info ms-1" id="customer-staging-count">0</span>
+                                        <button class="nav-link" id="filenumber-preview-tab" data-bs-toggle="tab" data-bs-target="#filenumber-preview-pane" type="button" role="tab" aria-controls="filenumber-preview-pane" aria-selected="false">
+                                            <i class="fas fa-list-ol me-1"></i> File Number Preview
+                                            <span class="badge bg-secondary ms-1" id="filenumber-preview-count">0</span>
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="grouping-preview-tab" data-bs-toggle="tab" data-bs-target="#grouping-preview-pane" type="button" role="tab" aria-controls="grouping-preview-pane" aria-selected="false">
+                                            <i class="fas fa-layer-group me-1"></i> Grouping Match Preview
                                         </button>
                                     </li>
                                 </ul>
@@ -331,6 +331,63 @@
                                             </nav>
                                         </div>
                                     </div>
+                                    <!-- CofO Preview Tab (NEW) -->
+                                    <div class="tab-pane fade" id="cofo-preview-pane" role="tabpanel" aria-labelledby="cofo-preview-tab">
+                                        <div class="p-3">
+                                            <div class="table-responsive">
+                                                <table class="table table-sm staging-table align-middle">
+                                                    <thead class="table-light">
+                                                        <tr>
+                                                            <th style="width: 60px;">S/N</th>
+                                                            <th>File Number</th>
+                                                            <th>CoFO Date</th>
+                                                            <th>Deeds Date</th>
+                                                            <th>Deeds Time</th>
+                                                            <th>Registry</th>
+                                                            <th>Serial Number</th>
+                                                            <th>Page</th>
+                                                            <th>Volume</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody id="cofo-preview-body" class="cofo-preview-container">
+                                                        <!-- Filled via JavaScript -->
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div class="mt-3">
+                                                <p class="mb-0">
+                                                    <small class="text-muted"><strong id="cofo-total-count">0</strong> CofO records</small>
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <!-- FileNumber Preview Tab (NEW) -->
+                                    <div class="tab-pane fade" id="filenumber-preview-pane" role="tabpanel" aria-labelledby="filenumber-preview-tab">
+                                        <div class="p-3">
+                                            <div class="table-responsive">
+                                                <table class="table table-sm staging-table align-middle">
+                                                    <thead class="table-light">
+                                                        <tr>
+                                                            <th style="width: 60px;">S/N</th>
+                                                            <th>FileNo</th>
+                                                            <th>File Title</th>
+                                                            <th>Plot No</th>
+                                                            <th>TP No</th>
+                                                            <th>Location</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody id="filenumber-preview-body" class="filenumber-preview-container">
+                                                        <!-- Filled via JavaScript -->
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div class="mt-3">
+                                                <p class="mb-0">
+                                                    <small class="text-muted"><strong id="filenumber-total-count">0</strong> File Number records</small>
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </div>
                                     <div class="tab-pane fade" id="grouping-preview-pane" role="tabpanel" aria-labelledby="grouping-preview-tab">
                                         <div class="p-3">
                                             <div class="row gx-3 gy-2 mb-3" id="groupingSummary">
@@ -364,10 +421,14 @@
                                                     <thead class="table-light">
                                                         <tr>
                                                             <th>File Number</th>
-                                                            <th>Status</th>
-                                                            <th>Grouping Registry</th>
+                                                            <th>Notes (Awaiting)</th>
+                                                            <th>Sys Batch No</th>
+                                                            <th>MDC Batch No</th>
+                                                            <th>Grouping</th>
                                                             <th>Grouping Number</th>
-                                                            <th>Notes</th>
+                                                            <th>Registry</th>
+                                                            <th>Registry Batch No</th>
+                                                            <th>Status</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody id="groupingPreviewBody">
@@ -469,84 +530,6 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <!-- Entity Staging Tab (NEW) -->
-                                    <div class="tab-pane fade" id="entity-staging-pane" role="tabpanel" aria-labelledby="entity-staging-tab">
-                                        <div class="p-3">
-                                            <div class="staging-preview-section mb-3">
-                                                <h5 class="section-title">
-                                                    <i class="fas fa-building me-2"></i>Entity Staging Preview
-                                                    <span class="badge badge-info" id="entity-staging-summary-count">0 entities</span>
-                                                </h5>
-                                                <div class="alert alert-info" role="alert">
-                                                    <small><strong>ℹ️ Note:</strong> Entity IDs displayed as <code>TMP-1</code>, <code>TMP-2</code>, etc. are temporary preview identifiers and will <strong>not</strong> be saved to the database; actual entity IDs will be assigned during import.</small>
-                                                </div>
-                                                <div class="table-responsive">
-                                                    <table class="table table-sm staging-table align-middle">
-                                                        <thead class="table-light">
-                                                            <tr>
-                                                                <th>Entity ID</th>
-                                                                <th>Entity Name</th>
-                                                                <th>Type</th>
-                                                                <th>Passport Photo</th>
-                                                                <th>Company Logo</th>
-                                                                <th>File Number</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody id="entity-staging-body" class="entity-staging-container">
-                                                            <!-- Filled via JavaScript -->
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                                <div class="staging-summary mt-3">
-                                                    <p class="mb-0">
-                                                        <strong>Summary:</strong> 
-                                                        <span id="entity-new-count">0</span> new entities • 
-                                                        <span id="entity-reused-count">0</span> reused • 
-                                                        <span id="entity-with-photos-count">0</span> with photos
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <!-- Customer Staging Tab (NEW) -->
-                                    <div class="tab-pane fade" id="customer-staging-pane" role="tabpanel" aria-labelledby="customer-staging-tab">
-                                        <div class="p-3">
-                                            <div class="staging-preview-section mb-3">
-                                                <h5 class="section-title">
-                                                    <i class="fas fa-users me-2"></i>Customer Staging Preview
-                                                    <span class="badge badge-info" id="customer-staging-summary-count">0 customers</span>
-                                                </h5>
-                                                <div class="table-responsive">
-                                                    <table class="table table-sm staging-table align-middle">
-                                                        <thead class="table-light">
-                                                            <tr>
-                                                                <th>Entity ID</th>
-                                                                <th>Customer Name</th>
-                                                                <th>Type</th>
-                                                                <th>Customer Code</th>
-                                                                <th>Email</th>
-                                                                <th>Phone</th>
-                                                                <th>Property Address</th>
-                                                                <th>Linked Entity</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody id="customer-staging-body" class="customer-staging-container">
-                                                            <!-- Filled via JavaScript -->
-                                                        </tbody>
-                                                    </table>
-                                                </div>
-                                                <div class="staging-summary mt-3">
-                                                    <p class="mb-0">
-                                                        <strong>Summary:</strong> 
-                                                        <span id="customer-total-count">0</span> customers • 
-                                                        <span id="customer-with-email-count">0</span> with email • 
-                                                        <span id="customer-with-phone-count">0</span> with phone • 
-                                                        <span id="customer-with-address-count">0</span> with address
-                                                    </p>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -612,6 +595,6 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom JS -->
     <script src="/static/js/main.js"></script>
-    <script src="/static/js/file-indexing.js?v=20251106-7"></script>
+    <script src="/static/js/file-indexing.js?v=20251116-1"></script>
 </body>
 </html>

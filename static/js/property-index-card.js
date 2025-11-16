@@ -21,6 +21,8 @@ class PropertyIndexCardImportManager {
         this.propertyRecords = [];
         this.cofoRecords = [];
         this.fileNumberRecords = [];
+        this.entityStagingRecords = [];
+        this.customerStagingRecords = [];
         this.filteredRows = [];
         this.currentTab = 'records';
         this.currentFilter = 'all';
@@ -28,75 +30,86 @@ class PropertyIndexCardImportManager {
         this.itemsPerPage = 20;
         this.sessionId = null;
         this.qcIssues = {};
-        this.loadingModal = null;
+        this.testControlMode = '';
         this.isUploading = false;
+        this.isClearingMode = false;
         this.isApplyingFixAll = false;
+        this.uploadManuallyDisabled = false;
+        this.loadingModal = null;
         this.activeInlineEdit = null;
+        this.customerLookupByEntityId = new Map();
+        this.customerLookupByFileNumber = new Map();
+
+        this.fileNumberIssueTypes = [...PIC_FILE_NUMBER_ISSUE_TYPES];
         this.categoryConfig = {};
         this.categoryOrder = [];
-        this.fileNumberIssueTypes = [...PIC_FILE_NUMBER_ISSUE_TYPES];
-        this.filterControls = document.getElementById('picFilterControls');
-        this.fixAllButton = document.getElementById('picFileNumberFixAllBtn');
-        this.fixAllButtonWrapper = document.getElementById('picFileNumberFixAllWrapper');
-        this.testControlSelect = document.getElementById('picTestControlSelect');
-        this.testControlMode = this.testControlSelect?.value && this.testControlSelect.value !== ''
-            ? this.testControlSelect.value.toUpperCase()
-            : null;
-        this.importButton = document.getElementById('importPicBtn');
-        this.uploadManuallyDisabled = false;
-        this.clearModeBtn = document.getElementById('picClearModeBtn');
-        this.confirmClearDataBtn = document.getElementById('picConfirmClearDataBtn');
-        const clearDataModalElement = document.getElementById('picClearDataModal');
-        this.clearDataModal = (this.clearModeBtn && clearDataModalElement && window.bootstrap && window.bootstrap.Modal)
-            ? new window.bootstrap.Modal(clearDataModalElement)
-            : null;
-        this.isClearingMode = false;
 
-        PIC_QC_CATEGORY_CONFIG.forEach((cfg) => {
-            this.categoryConfig[cfg.key] = { ...cfg };
-            this.categoryOrder.push(cfg.key);
+        PIC_QC_CATEGORY_CONFIG.forEach((config) => {
+            this.categoryConfig[config.key] = { ...config };
+            this.categoryOrder.push(config.key);
         });
 
+        this.uploadForm = document.getElementById('picUploadForm');
+        this.importButton = document.getElementById('importPicBtn');
+        this.testControlSelect = document.getElementById('picTestControlSelect');
+        this.clearModeBtn = document.getElementById('picClearModeBtn');
+        this.confirmClearDataBtn = document.getElementById('picConfirmClearDataBtn');
+        this.filterControls = document.getElementById('picFilterControls');
+        this.fixAllButtonWrapper = document.getElementById('picFileNumberFixAllWrapper');
+        this.fixAllButton = document.getElementById('picFileNumberFixAllBtn');
+
+        this.clearDataModalElement = document.getElementById('picClearDataModal');
+        this.clearDataModal = (this.clearDataModalElement && window.bootstrap?.Modal)
+            ? new window.bootstrap.Modal(this.clearDataModalElement)
+            : null;
+
         this.registerEventHandlers();
-        this.updateFilterButtons();
-        this.resetSessionData({ keepFileInput: true });
+
+        const initialMode = this.testControlSelect?.value || '';
+        this.syncTestControl(initialMode);
+        this.toggleFilterControls(false);
         this.updateModeButtons();
+        this.updateStagingDisplay();
+        this.setTableVisibility();
+        this.setImportButtonState(0);
+        this.updateFileNumberFixAllState();
+        this.updateShowingInfo(0);
+        this.renderPagination();
     }
 
     registerEventHandlers() {
-        const uploadForm = document.getElementById('picUploadForm');
-        if (uploadForm) {
-            uploadForm.addEventListener('submit', (event) => this.handleUploadSubmit(event));
-        }
-
-        const uploadBtn = document.getElementById('picUploadBtn');
-        if (uploadBtn) {
-            uploadBtn.addEventListener('click', (event) => {
-                event.preventDefault();
-                this.handleUploadSubmit(event);
-            });
+        if (this.uploadForm) {
+            this.uploadForm.addEventListener('submit', (event) => this.handleUploadSubmit(event));
         }
 
         const fileInput = document.getElementById('picFileInput');
-        fileInput?.addEventListener('change', () => this.updateModeButtons());
+        if (fileInput) {
+            fileInput.addEventListener('change', () => this.updateModeButtons());
+        }
 
         if (this.testControlSelect) {
             this.testControlSelect.addEventListener('change', (event) => {
-                const value = event.target.value || '';
-                this.testControlMode = value ? value.toUpperCase() : null;
+                this.syncTestControl(event.target.value);
                 this.updateModeButtons();
             });
         }
 
         if (this.clearModeBtn) {
-            this.clearModeBtn.addEventListener('click', () => {
+            this.clearModeBtn.addEventListener('click', (event) => {
                 if (!this.modeIsSelected()) {
+                    event.preventDefault();
                     this.showAlert('Select a Data Mode before clearing data.', 'warning');
-                    this.testControlSelect?.focus();
+                    return;
+                }
+                if (this.isClearingMode) {
+                    event.preventDefault();
                     return;
                 }
                 if (this.clearDataModal) {
+                    event.preventDefault();
                     this.clearDataModal.show();
+                } else if (window.confirm(`Clear Property Index Card data in ${this.testControlMode || 'the selected'} mode?`)) {
+                    this.handleClearMode();
                 }
             });
         }
@@ -117,14 +130,27 @@ class PropertyIndexCardImportManager {
         tabs.forEach((tab) => {
             tab.addEventListener('shown.bs.tab', (event) => {
                 const target = event.target.getAttribute('data-bs-target');
-                if (target === '#pic-records-pane') {
-                    this.handleTabChange('records');
-                } else if (target === '#pic-cofo-pane') {
-                    this.handleTabChange('cofo');
-                } else if (target === '#pic-file-numbers-pane') {
-                    this.handleTabChange('file-numbers');
-                } else if (target === '#pic-fileno-pane') {
-                    this.handleTabChange('file-number-qc');
+                switch (target) {
+                    case '#pic-records-pane':
+                        this.handleTabChange('records');
+                        break;
+                    case '#pic-cofo-pane':
+                        this.handleTabChange('cofo');
+                        break;
+                    case '#pic-file-numbers-pane':
+                        this.handleTabChange('file-numbers');
+                        break;
+                    case '#pic-fileno-pane':
+                        this.handleTabChange('file-number-qc');
+                        break;
+                    case '#pic-entities-pane':
+                        this.handleTabChange('entities');
+                        break;
+                    case '#pic-customers-pane':
+                        this.handleTabChange('customers');
+                        break;
+                    default:
+                        break;
                 }
             });
         });
@@ -210,6 +236,20 @@ class PropertyIndexCardImportManager {
             this.propertyRecords = Array.isArray(result.property_records) ? result.property_records : [];
             this.cofoRecords = Array.isArray(result.cofo_records) ? result.cofo_records : [];
             this.fileNumberRecords = Array.isArray(result.file_number_records) ? result.file_number_records : [];
+            const entityPreview = this.resolvePreviewArray(result, [
+                'entity_staging_preview',
+                'entity_staging_records',
+                'entities_preview',
+                'entities'
+            ]);
+            this.entityStagingRecords = entityPreview ? entityPreview : [];
+            const customerPreview = this.resolvePreviewArray(result, [
+                'customer_staging_preview',
+                'customer_staging_records',
+                'customers_preview',
+                'customers'
+            ]);
+            this.customerStagingRecords = customerPreview ? customerPreview : [];
             this.qcIssues = result.issues || {};
             if (result.test_control) {
                 this.syncTestControl(result.test_control);
@@ -217,6 +257,7 @@ class PropertyIndexCardImportManager {
 
             this.updateProgress(70, 'Rendering preview…');
             this.updateStatistics(result);
+            this.updateStagingDisplay();
             this.updatePreview();
             this.showValidationIssues(this.qcIssues);
             this.setImportButtonState(result.ready_records);
@@ -322,6 +363,8 @@ class PropertyIndexCardImportManager {
         this.propertyRecords = [];
         this.cofoRecords = [];
         this.fileNumberRecords = [];
+        this.entityStagingRecords = [];
+        this.customerStagingRecords = [];
         this.filteredRows = [];
         this.sessionId = null;
         this.qcIssues = {};
@@ -351,6 +394,12 @@ class PropertyIndexCardImportManager {
         this.isClearingMode = false;
         this.setClearModeLoading(false);
         this.updateModeButtons();
+
+        this.rebuildCustomerLookupMaps();
+        this.updateElementText('picEntitiesCount', 0);
+        this.updateElementText('picCustomersCount', 0);
+        this.renderEntitiesTable();
+        this.renderCustomersTable();
     }
 
     clearTableBodies() {
@@ -358,6 +407,8 @@ class PropertyIndexCardImportManager {
         const cofoBody = document.getElementById('picCofoTableBody');
         const fileNumbersBody = document.getElementById('picFileNumbersTableBody');
         const qcBody = document.getElementById('picFileNumberQcBody');
+        const entitiesBody = document.getElementById('picEntitiesTableBody');
+        const customersBody = document.getElementById('picCustomersTableBody');
 
         if (recordsBody) {
             recordsBody.innerHTML = '';
@@ -370,6 +421,12 @@ class PropertyIndexCardImportManager {
         }
         if (qcBody) {
             qcBody.innerHTML = '';
+        }
+        if (entitiesBody) {
+            entitiesBody.innerHTML = '';
+        }
+        if (customersBody) {
+            customersBody.innerHTML = '';
         }
     }
 
@@ -439,6 +496,7 @@ class PropertyIndexCardImportManager {
         this.currentFilter = 'all';
         this.currentPage = 1;
         this.updateFilterButtons();
+        this.toggleFilterControls(true);
         this.applyFilter();
         this.updateFileNumberFixAllState();
 
@@ -453,6 +511,19 @@ class PropertyIndexCardImportManager {
         this.updateElementText('picCofoCount', this.cofoRecords.length);
         this.updateElementText('picFileNumberCount', this.fileNumberRecords.length);
         this.updateFileNumberIssueCount();
+    }
+
+    updateStagingDisplay() {
+        this.rebuildCustomerLookupMaps();
+
+        const entityCount = this.entityStagingRecords.length;
+        const customerCount = this.customerStagingRecords.length;
+
+        this.updateElementText('picEntitiesCount', entityCount);
+        this.updateElementText('picCustomersCount', customerCount);
+
+        this.renderEntitiesTable();
+        this.renderCustomersTable();
     }
 
     updateElementText(id, value) {
@@ -687,14 +758,22 @@ class PropertyIndexCardImportManager {
     }
 
     handleTabChange(tab) {
-        if (!['records', 'cofo', 'file-numbers', 'file-number-qc'].includes(tab)) {
+        if (!['records', 'cofo', 'file-numbers', 'file-number-qc', 'entities', 'customers'].includes(tab)) {
             return;
         }
 
         this.currentTab = tab;
+        this.setTableVisibility();
+        this.renderEntitiesTable();
+        this.renderCustomersTable();
+
+        if (tab === 'entities' || tab === 'customers') {
+            this.toggleFilterControls(false);
+            return;
+        }
+
         this.currentPage = 1;
         this.toggleFilterControls(tab !== 'file-number-qc');
-        this.setTableVisibility();
         this.updateFileNumberFixAllState();
 
         if (tab === 'file-number-qc') {
@@ -804,6 +883,224 @@ class PropertyIndexCardImportManager {
         this.updateShowingInfo(this.filteredRows.length);
     }
 
+    rebuildCustomerLookupMaps() {
+        this.customerLookupByEntityId = new Map();
+        this.customerLookupByFileNumber = new Map();
+
+        if (!Array.isArray(this.customerStagingRecords) || !this.customerStagingRecords.length) {
+            return;
+        }
+
+        this.customerStagingRecords.forEach((customer) => {
+            const entityId = this.sanitizeValue(customer?.entity_id ?? customer?.entityId);
+            if (entityId && !this.customerLookupByEntityId.has(entityId)) {
+                this.customerLookupByEntityId.set(entityId, customer);
+            }
+
+            const fileNumber = this.sanitizeValue(customer?.file_number ?? customer?.mlsFNo ?? customer?.fileNumber);
+            if (fileNumber && !this.customerLookupByFileNumber.has(fileNumber)) {
+                this.customerLookupByFileNumber.set(fileNumber, customer);
+            }
+        });
+    }
+
+    findCustomerRecordForEntity(entity) {
+        if (!entity) {
+            return null;
+        }
+
+        const entityId = this.sanitizeValue(entity?.entity_id ?? entity?.entityId);
+        if (entityId && this.customerLookupByEntityId?.has(entityId)) {
+            return this.customerLookupByEntityId.get(entityId);
+        }
+
+        const fileNumber = this.sanitizeValue(entity?.file_number ?? entity?.fileNumber);
+        if (fileNumber && this.customerLookupByFileNumber?.has(fileNumber)) {
+            return this.customerLookupByFileNumber.get(fileNumber);
+        }
+
+        return null;
+    }
+
+    findCustomerNameForEntity(entity) {
+        const customer = this.findCustomerRecordForEntity(entity);
+        if (!customer) {
+            return '';
+        }
+
+        return this.sanitizeValue(
+            customer.customer_name
+            ?? customer.name
+            ?? customer.Grantee
+            ?? customer.grantee_original
+            ?? customer.entity_name
+        );
+    }
+
+    stripFileLabel(value) {
+        const sanitized = this.sanitizeValue(value);
+        if (!sanitized) {
+            return '';
+        }
+
+        return sanitized.replace(/^file(?:\s*number)?\s*[:\-]?/i, '').trim();
+    }
+
+    normalizeFileNumber(value) {
+        const sanitized = this.sanitizeValue(value);
+        if (!sanitized) {
+            return '';
+        }
+        return sanitized.replace(/[^a-z0-9]/gi, '').toUpperCase();
+    }
+
+    entityNameLooksLikeFile(entityName, fileNumber) {
+        if (!entityName || !fileNumber) {
+            return false;
+        }
+        const normalizedName = this.normalizeFileNumber(this.stripFileLabel(entityName));
+        const normalizedFile = this.normalizeFileNumber(fileNumber);
+        if (!normalizedName || !normalizedFile) {
+            return false;
+        }
+        return normalizedName === normalizedFile;
+    }
+
+    getEntityDisplayName(entity) {
+        const rawName = this.sanitizeValue(entity?.entity_name ?? entity?.name);
+        const fileNumber = this.sanitizeValue(entity?.file_number ?? entity?.fileNumber);
+
+        if (!rawName || this.entityNameLooksLikeFile(rawName, fileNumber)) {
+            const fallback = this.findCustomerNameForEntity(entity);
+            if (fallback) {
+                return fallback;
+            }
+        }
+
+        return rawName;
+    }
+
+    renderEntitiesTable() {
+        const wrapper = document.getElementById('picEntitiesTableWrapper');
+        const tbody = document.getElementById('picEntitiesTableBody');
+
+        if (!wrapper || !tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+
+        if (!this.entityStagingRecords.length) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = `
+                <td colspan="6" class="text-center text-muted py-4">
+                    No entities were extracted from this upload.
+                </td>
+            `;
+            tbody.appendChild(emptyRow);
+            wrapper.style.display = this.currentTab === 'entities' ? 'block' : 'none';
+            return;
+        }
+
+        this.entityStagingRecords.forEach((entity, index) => {
+            const entityName = this.getEntityDisplayName(entity);
+            const entityType = this.sanitizeValue(entity.entity_type);
+            const status = (entity.status || 'new').toString().trim() || 'new';
+            const entityId = this.sanitizeValue(entity.entity_id ?? entity.entityId);
+            const fileNumber = this.sanitizeValue(entity.file_number ?? entity.fileNumber);
+            const statusClass = status.toLowerCase() === 'new' ? 'badge bg-primary' : 'badge bg-info text-dark';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${entityId ? `<code>${this.escapeHtml(entityId)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${fileNumber ? `<code>${this.escapeHtml(fileNumber)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${entityType ? `<span class="badge bg-secondary">${this.escapeHtml(entityType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${entityName ? this.escapeHtml(entityName) : '<span class="text-muted">—</span>'}</td>
+                <td><span class="${statusClass}">${this.escapeHtml(status)}</span></td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        wrapper.style.display = this.currentTab === 'entities' ? 'block' : 'none';
+    }
+
+    renderCustomersTable() {
+        const wrapper = document.getElementById('picCustomersTableWrapper');
+        const tbody = document.getElementById('picCustomersTableBody');
+
+        if (!wrapper || !tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+
+        if (!this.customerStagingRecords.length) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = `
+                <td colspan="12" class="text-center text-muted py-4">
+                    No customers were extracted from this upload.
+                </td>
+            `;
+            tbody.appendChild(emptyRow);
+            wrapper.style.display = this.currentTab === 'customers' ? 'block' : 'none';
+            return;
+        }
+
+        this.customerStagingRecords.forEach((customer, index) => {
+            const customerName = this.sanitizeValue(customer.customer_name ?? customer.name);
+            const customerType = this.sanitizeValue(customer.customer_type ?? customer.type);
+            const customerCode = this.sanitizeValue(customer.customer_code ?? customer.customerCode);
+            const reasonRetired = this.sanitizeValue(customer.reason_retired ?? customer.reasonRetired);
+            const reasonBy = this.sanitizeValue(customer.reason_by ?? customer.reasonBy);
+            const fileNumber = this.sanitizeValue(customer.file_number ?? customer.mlsFNo ?? customer.fileNumber);
+            const accountNo = this.sanitizeValue(customer.account_no ?? customer.accountNo ?? fileNumber);
+            const entityId = this.sanitizeValue(customer.entity_id ?? customer.entityId);
+            const email = this.sanitizeValue(customer.email);
+            const phone = this.sanitizeValue(customer.phone);
+            const address = this.sanitizeValue(
+                customer.property_address
+                ?? customer.property_description
+                ?? customer.address
+            );
+
+            const reasonByCell = reasonBy
+                ? `<span>${this.escapeHtml(reasonBy)}</span>`
+                : '<span class="text-muted">—</span>';
+            const reasonRetiredCell = reasonRetired
+                ? `<span class="badge bg-warning text-dark">${this.escapeHtml(reasonRetired)}</span>`
+                : '<span class="text-muted">—</span>';
+            const emailCell = email
+                ? `<a href="mailto:${this.escapeHtml(email)}">${this.escapeHtml(email)}</a>`
+                : '<span class="text-muted">—</span>';
+            const phoneCell = phone
+                ? `<a href="tel:${this.escapeHtml(phone)}">${this.escapeHtml(phone)}</a>`
+                : '<span class="text-muted">—</span>';
+            const addressCell = address
+                ? `<span title="${this.escapeHtml(address)}">${this.escapeHtml(this.truncate(address, 60))}</span>`
+                : '<span class="text-muted">—</span>';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${entityId ? `<code>${this.escapeHtml(entityId)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${fileNumber ? `<code>${this.escapeHtml(fileNumber)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${accountNo ? `<code>${this.escapeHtml(accountNo)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${customerCode ? `<code>${this.escapeHtml(customerCode)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${customerName ? this.escapeHtml(customerName) : '<span class="text-muted">—</span>'}</td>
+                <td>${customerType ? `<span class="badge bg-secondary">${this.escapeHtml(customerType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${reasonByCell}</td>
+                <td>${reasonRetiredCell}</td>
+                <td>${emailCell}</td>
+                <td>${phoneCell}</td>
+                <td>${addressCell}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        wrapper.style.display = this.currentTab === 'customers' ? 'block' : 'none';
+    }
+
     createPropertyRecordRow(item, displayIndex) {
         const { record, index } = item;
         const tr = document.createElement('tr');
@@ -818,7 +1115,9 @@ class PropertyIndexCardImportManager {
         const transactionType = this.sanitizeValue(record?.transaction_type);
         const grantor = this.sanitizeValue(record?.Grantor);
         const grantee = this.sanitizeValue(record?.Grantee);
-        const location = this.sanitizeValue(record?.location);
+        const propertyDescription = this.sanitizeValue(record?.property_description ?? record?.propertyDescription);
+        const locationValue = this.sanitizeValue(record?.location);
+        const location = propertyDescription || locationValue;
         const propId = this.sanitizeValue(record?.prop_id);
         const assignmentDate = this.resolvePreferredValue(
             record?.assignment_date,
@@ -859,6 +1158,11 @@ class PropertyIndexCardImportManager {
                     break;
                 case 'editable':
                     td.textContent = config.value ?? '';
+                    if (config.field === 'location' && propertyDescription && locationValue) {
+                        td.title = this.escapeHtml(locationValue);
+                    } else if (config.field === 'location') {
+                        td.removeAttribute('title');
+                    }
                     this.attachInlineEditing(td, 'records', index, config.field);
                     break;
                 case 'prop-id':
@@ -1263,7 +1567,28 @@ class PropertyIndexCardImportManager {
             this.fileNumberRecords = result.file_number_records;
         }
 
+        const entityPreview = this.resolvePreviewArray(result, [
+            'entity_staging_preview',
+            'entity_staging_records',
+            'entities_preview',
+            'entities'
+        ]);
+        if (entityPreview !== null) {
+            this.entityStagingRecords = entityPreview;
+        }
+
+        const customerPreview = this.resolvePreviewArray(result, [
+            'customer_staging_preview',
+            'customer_staging_records',
+            'customers_preview',
+            'customers'
+        ]);
+        if (customerPreview !== null) {
+            this.customerStagingRecords = customerPreview;
+        }
+
         this.qcIssues = result.issues || {};
+        this.updateStagingDisplay();
         this.updateCounts();
         this.updateStatistics(result);
         this.setImportButtonState(result.ready_records);
@@ -1278,6 +1603,19 @@ class PropertyIndexCardImportManager {
 
         this.showValidationIssues(this.qcIssues);
         this.updateFileNumberFixAllState();
+    }
+
+    resolvePreviewArray(result, keys) {
+        if (!result || typeof result !== 'object' || !Array.isArray(keys)) {
+            return null;
+        }
+        for (const key of keys) {
+            const candidate = result[key];
+            if (Array.isArray(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
     }
 
     collectFileNumberIssues() {
@@ -1898,6 +2236,17 @@ class PropertyIndexCardImportManager {
             return trimmed;
         }
         return String(value);
+    }
+
+    truncate(value, maxLength = 60) {
+        const sanitized = this.sanitizeValue(value);
+        if (!sanitized) {
+            return '';
+        }
+        if (sanitized.length <= maxLength) {
+            return sanitized;
+        }
+        return `${sanitized.slice(0, Math.max(0, maxLength - 1))}…`;
     }
 
     resolvePreferredValue(...values) {

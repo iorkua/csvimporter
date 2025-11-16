@@ -46,8 +46,13 @@ class FileHistoryImportManager {
     constructor() {
         this.propertyRecords = [];
         this.cofoRecords = [];
+        this.entityStagingRecords = [];
+        this.customerStagingRecords = [];
+        this.stagingSummary = {};
+        this.fileNumberSummary = [];
+        this.fileNumberSummary = [];
         this.filteredRows = [];
-        this.currentTab = 'records';
+        this.currentTab = 'file-number-qc';
         this.currentFilter = 'all';
         this.currentPage = 1;
         this.itemsPerPage = 20;
@@ -148,12 +153,27 @@ class FileHistoryImportManager {
         tabs.forEach((tab) => {
             tab.addEventListener('shown.bs.tab', (event) => {
                 const target = event.target.getAttribute('data-bs-target');
-                if (target === '#history-records-pane') {
-                    this.handleTabChange('records');
-                } else if (target === '#history-cofo-pane') {
-                    this.handleTabChange('cofo');
-                } else if (target === '#history-fileno-pane') {
-                    this.handleTabChange('file-number-qc');
+                switch (target) {
+                    case '#history-fileno-pane':
+                        this.handleTabChange('file-number-qc');
+                        break;
+                    case '#history-records-pane':
+                        this.handleTabChange('records');
+                        break;
+                    case '#history-cofo-pane':
+                        this.handleTabChange('cofo');
+                        break;
+                    case '#history-file-numbers-pane':
+                        this.handleTabChange('file-numbers');
+                        break;
+                    case '#history-entities-pane':
+                        this.handleTabChange('entities');
+                        break;
+                    case '#history-customers-pane':
+                        this.handleTabChange('customers');
+                        break;
+                    default:
+                        break;
                 }
             });
         });
@@ -434,10 +454,14 @@ class FileHistoryImportManager {
             this.sessionId = result.session_id || null;
             this.propertyRecords = Array.isArray(result.property_records) ? result.property_records : [];
             this.cofoRecords = Array.isArray(result.cofo_records) ? result.cofo_records : [];
+            this.entityStagingRecords = Array.isArray(result.entity_staging_preview) ? result.entity_staging_preview : [];
+            this.customerStagingRecords = Array.isArray(result.customer_staging_preview) ? result.customer_staging_preview : [];
+            this.stagingSummary = result.staging_summary || {};
             this.qcIssues = result.issues || {};
 
             this.updateProgress(70, 'Rendering preview…');
             this.updateStatistics(result);
+            this.updateStagingDisplay();
             this.updatePreview();
             this.showValidationIssues(this.qcIssues);
             this.setImportButtonState(result.ready_records);
@@ -558,6 +582,9 @@ class FileHistoryImportManager {
 
         this.propertyRecords = [];
         this.cofoRecords = [];
+        this.entityStagingRecords = [];
+        this.customerStagingRecords = [];
+        this.stagingSummary = {};
         this.filteredRows = [];
         this.sessionId = null;
         this.qcIssues = {};
@@ -572,6 +599,7 @@ class FileHistoryImportManager {
         this.hidePreviewSection();
         this.resetValidationPanel();
         this.resetStatistics();
+        this.resetStagingDisplay();
         this.updateCounts();
         this.updateShowingInfo(0);
         this.renderPagination();
@@ -594,6 +622,39 @@ class FileHistoryImportManager {
 
         this.updateToolbarModeLabel();
         this.setImportButtonState(0);
+    }
+
+    resetStagingDisplay() {
+        this.updateElementText('historyStagingEntityCountDisplay', 0);
+        this.updateElementText('historyStagingCustomerCountDisplay', 0);
+        this.updateElementText('historyStagingReasonRetiredCount', 0);
+        this.updateElementText('historyEntitiesCount', 0);
+        this.updateElementText('historyCustomersCount', 0);
+        this.updateElementText('entity-new-count', 0);
+        this.updateElementText('entity-reused-count', 0);
+        this.updateElementText('entity-with-photos-count', 0);
+        this.updateElementText('customer-total-count', 0);
+        this.updateElementText('customer-with-email-count', 0);
+        this.updateElementText('customer-with-phone-count', 0);
+        this.updateElementText('customer-with-address-count', 0);
+
+        const entitiesWrapper = document.getElementById('historyEntitiesTableWrapper');
+        const entitiesBody = document.getElementById('historyEntitiesTableBody');
+        if (entitiesWrapper) {
+            entitiesWrapper.style.display = 'none';
+        }
+        if (entitiesBody) {
+            entitiesBody.innerHTML = '';
+        }
+
+        const customersWrapper = document.getElementById('historyCustomersTableWrapper');
+        const customersBody = document.getElementById('historyCustomersTableBody');
+        if (customersWrapper) {
+            customersWrapper.style.display = 'none';
+        }
+        if (customersBody) {
+            customersBody.innerHTML = '';
+        }
     }
 
     clearTableBodies() {
@@ -675,15 +736,29 @@ class FileHistoryImportManager {
         }
     }
 
+    updateStagingDisplay() {
+        const entityCount = this.entityStagingRecords.length;
+        const customerCount = this.customerStagingRecords.length;
+        const reasonRetiredCount = this.customerStagingRecords.filter((c) => this.sanitizeValue(c.reason_retired ?? c.reasonRetired)).length;
+
+        this.updateElementText('historyStagingEntityCountDisplay', entityCount);
+        this.updateElementText('historyStagingCustomerCountDisplay', customerCount);
+        this.updateElementText('historyStagingReasonRetiredCount', reasonRetiredCount);
+        this.updateElementText('historyEntitiesCount', entityCount);
+        this.updateElementText('historyCustomersCount', customerCount);
+
+        this.renderEntitiesTable();
+        this.renderCustomersTable();
+    }
+
     updatePreview() {
         this.updateCounts();
         this.setTableVisibility();
         this.updateFileNumberFixAllState();
-        this.currentTab = 'records';
         this.currentFilter = 'all';
         this.currentPage = 1;
         this.updateFilterButtons();
-        this.applyFilter();
+        this.handleTabChange('file-number-qc');
         this.showPreviewSection();
     }
 
@@ -691,6 +766,9 @@ class FileHistoryImportManager {
         this.updateElementText('historyRecordsCount', this.propertyRecords.length);
         this.updateElementText('historyCofoCount', this.cofoRecords.length);
         this.updateFileNumberIssueCount();
+        this.fileNumberSummary = this.buildFileNumberSummary();
+        this.updateElementText('historyFileNumbersCount', this.fileNumberSummary.length);
+        this.renderFileNumbersTable();
     }
 
     updateElementText(id, value) {
@@ -791,20 +869,58 @@ class FileHistoryImportManager {
     }
 
     handleTabChange(tab) {
-        if (!['records', 'cofo', 'file-number-qc'].includes(tab)) {
+        if (!['records', 'cofo', 'file-number-qc', 'file-numbers', 'entities', 'customers'].includes(tab)) {
             return;
         }
 
         this.currentTab = tab;
         this.currentPage = 1;
-        this.toggleFilterControls(tab !== 'file-number-qc');
+        const supportsFilter = tab === 'records' || tab === 'cofo';
+        this.updateFilterButtons();
+        this.toggleFilterControls(supportsFilter);
         this.setTableVisibility();
         this.updateFileNumberFixAllState();
+
+        const pagination = document.getElementById('historyPagination');
 
         if (tab === 'file-number-qc') {
             this.renderFileNumberQcTable();
             this.updateShowingInfoForQc(this.countFileNumberIssues());
-            const pagination = document.getElementById('historyPagination');
+            if (pagination) {
+                pagination.innerHTML = '';
+            }
+            return;
+        }
+
+        if (tab === 'file-numbers') {
+            this.fileNumberSummary = this.buildFileNumberSummary();
+            this.renderFileNumbersTable();
+            this.updateShowingInfoForList(this.fileNumberSummary.length);
+            if (pagination) {
+                pagination.innerHTML = '';
+            }
+            return;
+        }
+
+        if (tab === 'entities') {
+            this.renderEntitiesTable();
+            this.updateShowingInfoForList(this.entityStagingRecords.length);
+            if (pagination) {
+                pagination.innerHTML = '';
+            }
+            return;
+        }
+
+        if (tab === 'customers') {
+            this.renderCustomersTable();
+            this.updateShowingInfoForList(this.customerStagingRecords.length);
+            if (pagination) {
+                pagination.innerHTML = '';
+            }
+            return;
+        }
+
+        if (!supportsFilter) {
             if (pagination) {
                 pagination.innerHTML = '';
             }
@@ -1449,6 +1565,322 @@ class FileHistoryImportManager {
         });
     }
 
+    buildFileNumberSummary() {
+        const summaryMap = new Map();
+        const normalize = (value) => {
+            const sanitized = this.sanitizeValue(value);
+            return sanitized || '—';
+        };
+
+        const ensureEntry = (value) => {
+            const key = normalize(value);
+            if (!summaryMap.has(key)) {
+                summaryMap.set(key, {
+                    fileNumber: key,
+                    currentHolder: null,
+                    plotNo: null,
+                    tpNo: null,
+                    location: null,
+                    propertyCount: 0,
+                    cofoCount: 0,
+                    issueCount: 0
+                });
+            }
+            return summaryMap.get(key);
+        };
+
+        this.propertyRecords.forEach((record) => {
+            const entry = ensureEntry(record?.mlsFNo || record?.file_number || record?.fileno);
+            entry.propertyCount += 1;
+
+            const assignee = this.resolvePreferredValue(
+                record?.Assignee,
+                record?.Grantee,
+                record?.grantee_assignee,
+                record?.current_holder,
+                record?.CurrentHolder
+            );
+            if (assignee && !entry.currentHolder) {
+                entry.currentHolder = this.sanitizeValue(assignee);
+            }
+
+            const plotNo = this.sanitizeValue(record?.plot_no || record?.plotNo);
+            if (plotNo && !entry.plotNo) {
+                entry.plotNo = plotNo;
+            }
+
+            const tpNo = this.sanitizeValue(record?.tp_no || record?.tpNo);
+            if (tpNo && !entry.tpNo) {
+                entry.tpNo = tpNo;
+            }
+
+            const location = this.sanitizeValue(record?.location || record?.Location || record?.district || record?.lga);
+            if (location && !entry.location) {
+                entry.location = location;
+            }
+        });
+
+        this.cofoRecords.forEach((record) => {
+            const entry = ensureEntry(record?.mlsFNo || record?.file_number || record?.fileno);
+            entry.cofoCount += 1;
+
+            if (!entry.currentHolder) {
+                const assignee = this.resolvePreferredValue(
+                    record?.Assignee,
+                    record?.Grantee,
+                    record?.grantee_assignee,
+                    record?.current_holder,
+                    record?.CurrentHolder
+                );
+                if (assignee) {
+                    entry.currentHolder = this.sanitizeValue(assignee);
+                }
+            }
+
+            if (!entry.plotNo) {
+                const plotNo = this.sanitizeValue(record?.plot_no || record?.plotNo);
+                if (plotNo) {
+                    entry.plotNo = plotNo;
+                }
+            }
+
+            if (!entry.tpNo) {
+                const tpNo = this.sanitizeValue(record?.tp_no || record?.tpNo);
+                if (tpNo) {
+                    entry.tpNo = tpNo;
+                }
+            }
+
+            if (!entry.location) {
+                const location = this.sanitizeValue(record?.location || record?.Location || record?.district || record?.lga);
+                if (location) {
+                    entry.location = location;
+                }
+            }
+        });
+
+        this.fileNumberIssueTypes.forEach((issueKey) => {
+            const issues = Array.isArray(this.qcIssues?.[issueKey]) ? this.qcIssues[issueKey] : [];
+            issues.forEach((issue) => {
+                const entry = ensureEntry(issue.file_number || issue.fileNumber || issue.mlsFNo);
+                entry.issueCount += 1;
+            });
+        });
+
+        const summary = Array.from(summaryMap.values()).filter((item) => (
+            item.fileNumber !== '—'
+                || item.propertyCount > 0
+                || item.cofoCount > 0
+                || item.issueCount > 0
+        ));
+
+        return summary.sort((a, b) => {
+            if (a.fileNumber === '—') {
+                return 1;
+            }
+            if (b.fileNumber === '—') {
+                return -1;
+            }
+            return a.fileNumber.localeCompare(b.fileNumber, undefined, { sensitivity: 'base', numeric: true });
+        });
+    }
+
+    renderFileNumbersTable() {
+        const wrapper = document.getElementById('historyFileNumbersTableWrapper');
+        const tbody = document.getElementById('historyFileNumbersTableBody');
+
+        if (!wrapper || !tbody) {
+            return;
+        }
+
+        const summary = this.fileNumberSummary.length ? this.fileNumberSummary : this.buildFileNumberSummary();
+        tbody.innerHTML = '';
+
+        if (!summary.length) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = `
+                <td colspan="6" class="text-center text-muted py-4">
+                    No file numbers detected in this preview.
+                </td>
+            `;
+            tbody.appendChild(emptyRow);
+        } else {
+            summary.forEach((entry, index) => {
+                const row = document.createElement('tr');
+                const fileNumberCell = entry.fileNumber === '—'
+                    ? '<span class="text-muted">Missing</span>'
+                    : `<code>${this.escapeHtml(entry.fileNumber)}</code>`;
+                const currentHolderCell = entry.currentHolder
+                    ? this.escapeHtml(entry.currentHolder)
+                    : '<span class="text-muted">—</span>';
+                const plotNoCell = entry.plotNo
+                    ? this.escapeHtml(entry.plotNo)
+                    : '<span class="text-muted">—</span>';
+                const tpNoCell = entry.tpNo
+                    ? this.escapeHtml(entry.tpNo)
+                    : '<span class="text-muted">—</span>';
+                const locationCell = entry.location
+                    ? this.escapeHtml(entry.location)
+                    : '<span class="text-muted">—</span>';
+
+                row.innerHTML = `
+                    <td>${index + 1}</td>
+                    <td>${fileNumberCell}</td>
+                    <td>${currentHolderCell}</td>
+                    <td>${plotNoCell}</td>
+                    <td>${tpNoCell}</td>
+                    <td>${locationCell}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        wrapper.style.display = this.currentTab === 'file-numbers' ? 'block' : 'none';
+    }
+
+    renderEntitiesTable() {
+        const wrapper = document.getElementById('historyEntitiesTableWrapper');
+        const tbody = document.getElementById('historyEntitiesTableBody');
+
+        if (!wrapper || !tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+
+        if (!this.entityStagingRecords.length) {
+            this.updateElementText('entity-new-count', 0);
+            this.updateElementText('entity-reused-count', 0);
+            this.updateElementText('entity-with-photos-count', 0);
+
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = `
+                <td colspan="6" class="text-center text-muted py-4">
+                    No entities were extracted from this upload.
+                </td>
+            `;
+            tbody.appendChild(emptyRow);
+            wrapper.style.display = this.currentTab === 'entities' ? 'block' : 'none';
+            return;
+        }
+
+        const newCount = this.entityStagingRecords.filter((entity) => (entity.status || '').toString().toLowerCase() === 'new').length;
+        const reusedCount = this.entityStagingRecords.filter((entity) => (entity.status || '').toString().toLowerCase() === 'reused').length;
+        const withPhotosCount = this.entityStagingRecords.filter((entity) => entity.passport_photo || entity.company_logo).length;
+
+        this.updateElementText('entity-new-count', newCount);
+        this.updateElementText('entity-reused-count', reusedCount);
+        this.updateElementText('entity-with-photos-count', withPhotosCount);
+
+        this.entityStagingRecords.forEach((entity, index) => {
+            const entityName = this.sanitizeValue(entity.entity_name ?? entity.name);
+            const entityType = this.sanitizeValue(entity.entity_type);
+            const status = (entity.status || '').toString().trim() || 'new';
+            const entityId = this.sanitizeValue(entity.entity_id ?? entity.entityId);
+            const fileNumber = this.sanitizeValue(entity.file_number ?? entity.fileNumber);
+            const statusClass = status.toLowerCase() === 'new' ? 'badge bg-primary' : 'badge bg-info text-dark';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${entityId ? `<code>${this.escapeHtml(entityId)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${fileNumber ? `<code>${this.escapeHtml(fileNumber)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${entityType ? `<span class="badge bg-secondary">${this.escapeHtml(entityType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${entityName ? this.escapeHtml(entityName) : '<span class="text-muted">—</span>'}</td>
+                <td><span class="${statusClass}">${this.escapeHtml(status)}</span></td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        wrapper.style.display = this.currentTab === 'entities' ? 'block' : 'none';
+    }
+
+    renderCustomersTable() {
+        const wrapper = document.getElementById('historyCustomersTableWrapper');
+        const tbody = document.getElementById('historyCustomersTableBody');
+
+        if (!wrapper || !tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+
+        const withEmailCount = this.customerStagingRecords.filter((customer) => this.sanitizeValue(customer.email)).length;
+        const withPhoneCount = this.customerStagingRecords.filter((customer) => this.sanitizeValue(customer.phone)).length;
+        const withAddressCount = this.customerStagingRecords.filter((customer) => this.sanitizeValue(customer.property_address)).length;
+
+        this.updateElementText('customer-total-count', this.customerStagingRecords.length);
+        this.updateElementText('customer-with-email-count', withEmailCount);
+        this.updateElementText('customer-with-phone-count', withPhoneCount);
+        this.updateElementText('customer-with-address-count', withAddressCount);
+
+        if (!this.customerStagingRecords.length) {
+            this.updateElementText('customer-total-count', 0);
+            this.updateElementText('customer-with-email-count', 0);
+            this.updateElementText('customer-with-phone-count', 0);
+            this.updateElementText('customer-with-address-count', 0);
+
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = `
+                <td colspan="12" class="text-center text-muted py-4">
+                    No customers were extracted from this upload.
+                </td>
+            `;
+            tbody.appendChild(emptyRow);
+            wrapper.style.display = this.currentTab === 'customers' ? 'block' : 'none';
+            return;
+        }
+
+        this.customerStagingRecords.forEach((customer, index) => {
+            const customerName = this.sanitizeValue(customer.customer_name ?? customer.name);
+            const customerType = this.sanitizeValue(customer.customer_type ?? customer.type);
+            const customerCode = this.sanitizeValue(customer.customer_code ?? customer.customerCode);
+            const reasonRetired = this.sanitizeValue(customer.reason_retired ?? customer.reasonRetired);
+            const reasonBy = this.sanitizeValue(customer.reason_by ?? customer.reasonBy);
+            const fileNumber = this.sanitizeValue(customer.file_number ?? customer.mlsFNo);
+            const accountNo = this.sanitizeValue(customer.account_no ?? customer.accountNo);
+            const entityId = this.sanitizeValue(customer.entity_id ?? customer.entityId);
+            const email = this.sanitizeValue(customer.email);
+            const phone = this.sanitizeValue(customer.phone);
+            const address = this.sanitizeValue(customer.property_address ?? customer.address);
+
+            const reasonByCell = reasonBy
+                ? `<span>${this.escapeHtml(reasonBy)}</span>`
+                : '<span class="text-muted">—</span>';
+            const reasonRetiredCell = reasonRetired
+                ? `<span class="badge bg-warning text-dark">${this.escapeHtml(reasonRetired)}</span>`
+                : '<span class="text-muted">—</span>';
+            const emailCell = email
+                ? `<a href="mailto:${this.escapeHtml(email)}">${this.escapeHtml(email)}</a>`
+                : '<span class="text-muted">—</span>';
+            const phoneCell = phone
+                ? `<a href="tel:${this.escapeHtml(phone)}">${this.escapeHtml(phone)}</a>`
+                : '<span class="text-muted">—</span>';
+            const addressCell = address
+                ? `<span title="${this.escapeHtml(address)}">${this.escapeHtml(this.truncate(address, 60))}</span>`
+                : '<span class="text-muted">—</span>';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${index + 1}</td>
+                <td>${entityId ? `<code>${this.escapeHtml(entityId)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${fileNumber ? `<code>${this.escapeHtml(fileNumber)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${accountNo ? `<code>${this.escapeHtml(accountNo)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${customerCode ? `<code>${this.escapeHtml(customerCode)}</code>` : '<span class="text-muted">—</span>'}</td>
+                <td>${customerName ? this.escapeHtml(customerName) : '<span class="text-muted">—</span>'}</td>
+                <td>${customerType ? `<span class="badge bg-secondary">${this.escapeHtml(customerType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${reasonByCell}</td>
+                <td>${reasonRetiredCell}</td>
+                <td>${emailCell}</td>
+                <td>${phoneCell}</td>
+                <td>${addressCell}</td>
+            `;
+            tbody.appendChild(row);
+        });
+
+        wrapper.style.display = this.currentTab === 'customers' ? 'block' : 'none';
+    }
+
     buildFileNumberQcRow(issue, displayIndex) {
         const tr = document.createElement('tr');
 
@@ -1659,6 +2091,10 @@ class FileHistoryImportManager {
         this.updateElementText('historyShowingStart', start);
         this.updateElementText('historyShowingEnd', count);
         this.updateElementText('historyShowingTotal', count);
+    }
+
+    updateShowingInfoForList(total) {
+        this.updateShowingInfoForQc(total);
     }
 
     countFileNumberIssues() {
@@ -1933,6 +2369,17 @@ class FileHistoryImportManager {
             return trimmed;
         }
         return String(value);
+    }
+
+    truncate(value, maxLength = 60) {
+        const sanitized = this.sanitizeValue(value);
+        if (!sanitized) {
+            return '';
+        }
+        if (sanitized.length <= maxLength) {
+            return sanitized;
+        }
+        return `${sanitized.slice(0, Math.max(0, maxLength - 1))}…`;
     }
 
     resolvePreferredValue(...values) {

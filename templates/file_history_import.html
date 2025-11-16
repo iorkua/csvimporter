@@ -251,7 +251,13 @@
 
                                 <ul class="nav nav-tabs mt-3" id="historyPreviewTabs" role="tablist">
                                     <li class="nav-item" role="presentation">
-                                        <button class="nav-link active" id="history-records-tab" data-bs-toggle="tab" data-bs-target="#history-records-pane" type="button" role="tab">
+                                        <button class="nav-link active" id="history-fileno-tab" data-bs-toggle="tab" data-bs-target="#history-fileno-pane" type="button" role="tab">
+                                            <i class="fas fa-hashtag me-1"></i>
+                                            File Number QC (<span id="historyFileNumberIssueCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="history-records-tab" data-bs-toggle="tab" data-bs-target="#history-records-pane" type="button" role="tab">
                                             <i class="fas fa-clipboard-list me-1"></i>
                                             Property Records (<span id="historyRecordsCount">0</span>)
                                         </button>
@@ -263,16 +269,57 @@
                                         </button>
                                     </li>
                                     <li class="nav-item" role="presentation">
-                                        <button class="nav-link" id="history-fileno-tab" data-bs-toggle="tab" data-bs-target="#history-fileno-pane" type="button" role="tab">
-                                            <i class="fas fa-hashtag me-1"></i>
-                                            File Number QC (<span id="historyFileNumberIssueCount">0</span>)
+                                        <button class="nav-link" id="history-file-numbers-tab" data-bs-toggle="tab" data-bs-target="#history-file-numbers-pane" type="button" role="tab">
+                                            <i class="fas fa-list-ol me-1"></i>
+                                            File Numbers (<span id="historyFileNumbersCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="history-entities-tab" data-bs-toggle="tab" data-bs-target="#history-entities-pane" type="button" role="tab">
+                                            <i class="fas fa-building me-1"></i>
+                                            Entities (<span id="historyEntitiesCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="history-customers-tab" data-bs-toggle="tab" data-bs-target="#history-customers-pane" type="button" role="tab">
+                                            <i class="fas fa-users me-1"></i>
+                                            Customers (<span id="historyCustomersCount">0</span>)
                                         </button>
                                     </li>
                                 </ul>
                             </div>
                             <div class="card-body">
                                 <div class="tab-content" id="historyPreviewTabContent">
-                                    <div class="tab-pane fade show active" id="history-records-pane" role="tabpanel">
+                                    <div class="tab-pane fade show active" id="history-fileno-pane" role="tabpanel">
+                                        <div class="d-flex justify-content-end align-items-center mb-2" id="historyFileNumberFixAllWrapper" style="display: none;">
+                                            <button class="btn btn-sm btn-primary" id="historyFileNumberFixAllBtn" type="button">
+                                                <i class="fas fa-magic me-1"></i>
+                                                Fix All
+                                            </button>
+                                        </div>
+                                        <div class="table-responsive" style="display:none;" id="historyFileNumberQcWrapper">
+                                            <table class="table table-striped table-hover" id="historyFileNumberQcTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="50">#</th>
+                                                        <th>Issue Type</th>
+                                                        <th>File Number</th>
+                                                        <th>Description</th>
+                                                        <th>Suggested Fix</th>
+                                                        <th>Severity</th>
+                                                        <th width="160" class="text-center">Actions</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="historyFileNumberQcBody"></tbody>
+                                            </table>
+                                        </div>
+                                        <div class="alert alert-success d-none" id="historyFileNumberQcEmpty">
+                                            <i class="fas fa-check-circle me-2"></i>
+                                            No file number QC issues detected.
+                                        </div>
+                                    </div>
+
+                                    <div class="tab-pane fade" id="history-records-pane" role="tabpanel">
                                         <div class="table-responsive" style="display:none;" id="historyRecordsTableWrapper">
                                             <table class="table table-striped table-hover" id="historyRecordsTable">
                                                 <thead class="table-dark sticky-top">
@@ -326,32 +373,67 @@
                                         </div>
                                     </div>
 
-                                    <div class="tab-pane fade" id="history-fileno-pane" role="tabpanel">
-                                        <div class="d-flex justify-content-end align-items-center mb-2" id="historyFileNumberFixAllWrapper" style="display: none;">
-                                            <button class="btn btn-sm btn-primary" id="historyFileNumberFixAllBtn" type="button">
-                                                <i class="fas fa-magic me-1"></i>
-                                                Fix All
-                                            </button>
-                                        </div>
-                                        <div class="table-responsive" style="display:none;" id="historyFileNumberQcWrapper">
-                                            <table class="table table-striped table-hover" id="historyFileNumberQcTable">
+                                    <div class="tab-pane fade" id="history-file-numbers-pane" role="tabpanel">
+                                        <div class="table-responsive" style="display:none;" id="historyFileNumbersTableWrapper">
+                                            <table class="table table-striped table-hover" id="historyFileNumbersTable">
                                                 <thead class="table-dark sticky-top">
                                                     <tr>
-                                                        <th width="50">#</th>
-                                                        <th>Issue Type</th>
-                                                        <th>File Number</th>
-                                                        <th>Description</th>
-                                                        <th>Suggested Fix</th>
-                                                        <th>Severity</th>
-                                                        <th width="160" class="text-center">Actions</th>
+                                                        <th width="60">S/N</th>
+                                                        <th>File No</th>
+                                                        <th>Current Holder (Assignee)</th>
+                                                        <th>Plot No</th>
+                                                        <th>TP No</th>
+                                                        <th>Location</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody id="historyFileNumberQcBody"></tbody>
+                                                <tbody id="historyFileNumbersTableBody"></tbody>
                                             </table>
                                         </div>
-                                        <div class="alert alert-success d-none" id="historyFileNumberQcEmpty">
-                                            <i class="fas fa-check-circle me-2"></i>
-                                            No file number QC issues detected.
+                                        <div class="alert alert-info d-none" id="historyFileNumbersEmpty">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            No file numbers detected in this preview.
+                                        </div>
+                                    </div>
+
+                                    <div class="tab-pane fade" id="history-entities-pane" role="tabpanel">
+                                        <div class="table-responsive" style="display:none;" id="historyEntitiesTableWrapper">
+                                            <table class="table table-striped table-hover text-nowrap" id="historyEntitiesTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="60">#</th>
+                                                        <th>Entity ID</th>
+                                                        <th>File Number</th>
+                                                        <th>Entity Type</th>
+                                                        <th>Entity Name</th>
+                                                        <th>Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="historyEntitiesTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <div class="tab-pane fade" id="history-customers-pane" role="tabpanel">
+                                        <div class="table-responsive" style="display:none;" id="historyCustomersTableWrapper">
+                                            <table class="table table-striped table-hover text-nowrap" id="historyCustomersTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="60">#</th>
+                                                        <th>Entity ID</th>
+                                                        <th>File Number</th>
+                                                        <th>Account No</th>
+                                                        <th>Customer Code</th>
+                                                        <th>Customer Name</th>
+                                                        <th>Customer Type</th>
+                                                        <th>Retired By</th>
+                                                        <th>Reason Retired</th>
+                                                        <th>Email</th>
+                                                        <th>Phone</th>
+                                                        <th>Property Address</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="historyCustomersTableBody"></tbody>
+                                            </table>
                                         </div>
                                     </div>
                                 </div>
@@ -464,6 +546,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/main.js"></script>
-    <script src="/static/js/file-history-import.js?v=20251105-2"></script>
+    <script src="/static/js/file-history-import.js?v=20251105-5"></script>
 </body>
 </html>

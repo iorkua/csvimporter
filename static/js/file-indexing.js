@@ -376,20 +376,6 @@ class FileIndexingManager {
                 this.propertyAssignments = result.property_assignments || [];
             }
             
-            // Store staging data (NEW)
-            this.stagingSummary = result.staging_summary || {};
-            this.entityStagingPreview = result.entity_staging_preview || [];
-            this.customerStagingPreview = result.customer_staging_preview || [];
-            
-            // Deduplicate entities and assign TMP IDs
-            this.entityMap = this.createEntityDeduplicationMap(this.entityStagingPreview);
-            
-            // Add entity_id references to customers based on entity name + type
-            this.customerStagingPreview.forEach(customer => {
-                const entityKey = `${customer.entity_name}:${customer.customer_type}`;
-                customer.entity_id = this.entityMap[entityKey];
-            });
-            
             this.selectedRows.clear();
             this.currentPage = 1;
             
@@ -397,8 +383,8 @@ class FileIndexingManager {
             this.renderPreviewTable();
             this.renderGroupingPreview();
             this.renderQCIssues();
-            this.renderEntityStagingPreview();  // NEW
-            this.renderCustomerStagingPreview();  // NEW
+            this.renderCoFOPreview();  // NEW
+            this.renderFileNumberPreview();  // NEW
             this.showSection('preview-section');
             this.updateUploadButtonState();
             
@@ -431,11 +417,23 @@ class FileIndexingManager {
 
         const rows = Array.isArray(this.groupingPreview?.rows) ? this.groupingPreview.rows : [];
         const note = typeof this.groupingPreview?.note === 'string' ? this.groupingPreview.note : '';
+        const columnCount = 9;
+        const displayOrDash = (value) => {
+            if (value === null || value === undefined) {
+                return '<span class="text-muted">—</span>';
+            }
+            const stringValue = String(value).trim();
+            if (!stringValue) {
+                return '<span class="text-muted">—</span>';
+            }
+            return this.escapeHtml(stringValue);
+        };
+        const hasValue = (value) => value !== null && value !== undefined && String(value).trim() !== '';
 
         if (note) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="5" class="text-center text-muted py-4">
+                    <td colspan="${columnCount}" class="text-center text-muted py-4">
                         ${this.escapeHtml(note)}
                     </td>
                 </tr>`;
@@ -445,7 +443,7 @@ class FileIndexingManager {
         if (!rows.length) {
             tbody.innerHTML = `
                 <tr>
-                    <td colspan="5" class="text-center text-muted py-4">
+                    <td colspan="${columnCount}" class="text-center text-muted py-4">
                         No grouping matches evaluated yet. Upload a file to preview grouping matches.
                     </td>
                 </tr>`;
@@ -454,48 +452,73 @@ class FileIndexingManager {
 
         tbody.innerHTML = '';
 
-        rows.forEach(row => {
+        rows.forEach((row) => {
             const status = row.status || 'unknown';
             const tr = document.createElement('tr');
             this.applyGroupingStatusStyle(tr, status);
 
-            const originalNumber = row.file_number || '';
-            const normalizedNumber = row.normalized_file_number || '';
-            const awaitingDisplay = row.awaiting_fileno || '';
-            const awaitingNormalized = row.awaiting_normalized || '';
+            const originalText = row.file_number != null ? String(row.file_number) : '';
+            const normalizedText = row.normalized_file_number != null ? String(row.normalized_file_number) : '';
+            const awaitingDisplay = row.awaiting_fileno != null ? String(row.awaiting_fileno) : '';
+            const awaitingNormalized = row.awaiting_normalized != null ? String(row.awaiting_normalized) : '';
             const statusReason = row.reason || row.notes || '';
 
-            const normalizedMarkup = normalizedNumber && normalizedNumber !== originalNumber.toUpperCase()
-                ? `<div class="text-muted small">Normalized: ${normalizedNumber}</div>`
+            const normalizedMarkup = normalizedText && normalizedText !== originalText.toUpperCase()
+                ? `<div class="text-muted small">Normalized: ${this.escapeHtml(normalizedText)}</div>`
                 : '';
 
             const awaitingDetails = [];
             if (awaitingDisplay) {
-                awaitingDetails.push(`Awaiting: ${awaitingDisplay}`);
+                awaitingDetails.push(`Awaiting: ${this.escapeHtml(awaitingDisplay)}`);
             }
             if (awaitingNormalized && awaitingDisplay && awaitingNormalized !== awaitingDisplay.toUpperCase()) {
-                awaitingDetails.push(`Awaiting normalized: ${awaitingNormalized}`);
+                awaitingDetails.push(`Awaiting normalized: ${this.escapeHtml(awaitingNormalized)}`);
             }
             const awaitingMarkup = awaitingDetails.length
                 ? `<div class="text-muted small">${awaitingDetails.join(' · ')}</div>`
                 : '';
 
             const reasonMarkup = statusReason
-                ? `<div>${statusReason}</div>`
+                ? `<div>${this.escapeHtml(String(statusReason))}</div>`
                 : '';
+
+            const registryMarkup = displayOrDash(row.registry);
+
+            const registryBatchMarkup = displayOrDash(row.registry_batch_no);
+
+            const mdcBatchParts = [];
+            const mdcBatchValue = row.mdc_batch_no;
+            const csvBatchValue = row.csv_batch_no;
+            if (hasValue(mdcBatchValue)) {
+                mdcBatchParts.push(`<div>${this.escapeHtml(String(mdcBatchValue))}</div>`);
+            }
+            if (hasValue(csvBatchValue)) {
+                const csvValueEscaped = this.escapeHtml(String(csvBatchValue));
+                if (!hasValue(mdcBatchValue)) {
+                    mdcBatchParts.push(`<div>${csvValueEscaped}</div>`);
+                } else if (String(csvBatchValue).toUpperCase() !== String(mdcBatchValue).toUpperCase()) {
+                    mdcBatchParts.push(`<div class="text-muted small">CSV: ${csvValueEscaped}</div>`);
+                }
+            }
+            const mdcBatchMarkup = mdcBatchParts.length ? mdcBatchParts.join('') : '<span class="text-muted">—</span>';
+
+            const notesContent = reasonMarkup || awaitingMarkup
+                ? `${reasonMarkup}${awaitingMarkup}`
+                : '<span class="text-muted">—</span>';
 
             tr.innerHTML = `
                 <td>
-                    <div>${originalNumber}</div>
+                    <div>${this.escapeHtml(originalText)}</div>
                     ${normalizedMarkup}
                 </td>
+                <td>${notesContent}</td>
+                <td>${displayOrDash(row.sys_batch_no)}</td>
+                <td>${mdcBatchMarkup}</td>
+                <td>${displayOrDash(row.group)}</td>
+                <td>${displayOrDash(row.grouping_number)}</td>
+                <td>${registryMarkup}</td>
+                <td>${displayOrDash(row.registry_batch_no)}</td>
                 <td>${this.getGroupingStatusBadge(status)}</td>
-                <td>${row.grouping_registry || ''}</td>
-                <td>${row.grouping_number || ''}</td>
-                <td>
-                    ${reasonMarkup}
-                    ${awaitingMarkup}
-                </td>
             `;
 
             tbody.appendChild(tr);
@@ -1446,157 +1469,77 @@ class FileIndexingManager {
     }
     
     // Staging Preview Functions (NEW)
-    renderEntityStagingPreview() {
-        const tbody = document.getElementById('entity-staging-body');
-        const countBadge = document.getElementById('entity-staging-count');
-        const summaryBadge = document.getElementById('entity-staging-summary-count');
-        
-        if (!tbody || !this.entityStagingPreview) return;
-        
+
+    renderCoFOPreview() {
+        const tbody = document.getElementById('cofo-preview-body');
+        const countBadge = document.getElementById('cofo-preview-count');
+        const totalCount = document.getElementById('cofo-total-count');
+
+        if (!tbody || !this.currentData) return;
+
         tbody.innerHTML = '';
+        let serialNumber = 1;
         
-        // Deduplicate entities: keep only the first occurrence of each name+type combo
-        const seenEntities = new Set();
-        const deduplicatedEntities = [];
-        let tmpCounter = 1;
-        
-        this.entityStagingPreview.forEach((entity, idx) => {
-            const entityKey = `${entity.entity_name}:${entity.entity_type}`;
-            
-            // Only render if we haven't seen this entity combination before
-            if (!seenEntities.has(entityKey)) {
-                seenEntities.add(entityKey);
-                
-                const typeClass = this.getTypeClass(entity.entity_type);
-                const hasPhotos = entity.passport_photo || entity.company_logo;
-                const photoMarkup = entity.entity_type !== 'Individual' 
-                    ? `<img src="${entity.passport_photo}" alt="Passport" class="staging-photo" onerror="this.src='https://via.placeholder.com/80x100?text=No+Photo'">`
-                    : '<span class="text-muted">N/A</span>';
-                const logoMarkup = entity.entity_type !== 'Individual'
-                    ? `<img src="${entity.company_logo}" alt="Logo" class="staging-photo" onerror="this.src='https://via.placeholder.com/100x50?text=No+Logo'">`
-                    : '<span class="text-muted">N/A</span>';
-                
-                // Use TMP-{counter} format for temporary IDs
-                const tmpId = `TMP-${tmpCounter}`;
-                tmpCounter++;
-                
-                const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td class="entity-id"><code>${tmpId}</code></td>
-                    <td class="entity-name">${entity.entity_name}</td>
-                    <td><span class="badge ${typeClass}">${entity.entity_type}</span></td>
-                    <td class="photo-cell">${photoMarkup}</td>
-                    <td class="photo-cell">${logoMarkup}</td>
-                    <td>${entity.file_number || '—'}</td>
-                `;
-                tbody.appendChild(row);
-                deduplicatedEntities.push(entity);
-            }
-        });
-        
-        // Update count badges with deduplicated count
-        if (countBadge) {
-            countBadge.textContent = deduplicatedEntities.length;
-        }
-        if (summaryBadge) {
-            summaryBadge.textContent = `${deduplicatedEntities.length} entities`;
-        }
-        
-        // Update summary counts from deduplicated list
-        const newCount = deduplicatedEntities.filter(e => e.status === 'new').length;
-        const reusedCount = deduplicatedEntities.filter(e => e.status === 'reused').length;
-        const withPhotosCount = deduplicatedEntities.filter(e => e.passport_photo || e.company_logo).length;
-        
-        document.getElementById('entity-new-count').textContent = newCount;
-        document.getElementById('entity-reused-count').textContent = reusedCount;
-        document.getElementById('entity-with-photos-count').textContent = withPhotosCount;
-    }
-    
-    renderCustomerStagingPreview() {
-        const tbody = document.getElementById('customer-staging-body');
-        const countBadge = document.getElementById('customer-staging-count');
-        const summaryBadge = document.getElementById('customer-staging-summary-count');
-        
-        if (!tbody || !this.customerStagingPreview) return;
-        
-        tbody.innerHTML = '';
-        
-        this.customerStagingPreview.forEach((customer, idx) => {
-            const typeClass = this.getTypeClass(customer.customer_type);
-            const emailCell = customer.email 
-                ? `<a href="mailto:${customer.email}">${customer.email}</a>`
-                : '<span class="text-muted">—</span>';
-            const phoneCell = customer.phone
-                ? `<a href="tel:${customer.phone}">${customer.phone}</a>`
-                : '<span class="text-muted">—</span>';
-            const addressText = this.truncate(customer.property_address || 'Not specified', 40);
-            const addressCell = customer.property_address
-                ? `<span class="address-cell" title="${customer.property_address}">${addressText}</span>`
-                : '<span class="text-muted">Not specified</span>';
-            
-            // Use entity_id that was mapped during loadPreviewData
-            const displayEntityId = customer.entity_id || '—';
-            
+        this.currentData.forEach((record, idx) => {
+            if (!this.recordHasCofoPayload(record)) return;  // Skip records without any CofO signal
+
+            const formattedDeedsTime = this.formatDeedsTime(record.deeds_time);
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td class="entity-id"><code>${displayEntityId}</code></td>
-                <td class="customer-name">${customer.customer_name}</td>
-                <td><span class="badge ${typeClass}">${customer.customer_type}</span></td>
-                <td><code class="customer-code">${customer.customer_code}</code></td>
-                <td>${emailCell}</td>
-                <td>${phoneCell}</td>
-                <td>${addressCell}</td>
-                <td><span class="entity-link" title="Linked to: ${customer.entity_name}">${customer.entity_name || '—'}</span></td>
+                <td class="text-center"><strong>${serialNumber}</strong></td>
+                <td><code>${record.file_number || '—'}</code></td>
+                <td>${record.cofo_date || '—'}</td>
+                <td>${record.deeds_date || '—'}</td>
+                <td>${formattedDeedsTime}</td>
+                <td>${record.registry || '—'}</td>
+                <td><code>${record.serial_no || '—'}</code></td>
+                <td><code>${record.page_no || '—'}</code></td>
+                <td><code>${record.vol_no || '—'}</code></td>
             `;
             tbody.appendChild(row);
+            serialNumber++;
         });
-        
-        if (countBadge) {
-            countBadge.textContent = this.customerStagingPreview.length;
-        }
-        if (summaryBadge) {
-            summaryBadge.textContent = `${this.customerStagingPreview.length} customers`;
-        }
-        
-        // Update summary counts
-        const withEmailCount = this.customerStagingPreview.filter(c => c.email).length;
-        const withPhoneCount = this.customerStagingPreview.filter(c => c.phone).length;
-        const withAddressCount = this.customerStagingPreview.filter(c => c.property_address).length;
-        
-        document.getElementById('customer-total-count').textContent = this.customerStagingPreview.length;
-        document.getElementById('customer-with-email-count').textContent = withEmailCount;
-        document.getElementById('customer-with-phone-count').textContent = withPhoneCount;
-        document.getElementById('customer-with-address-count').textContent = withAddressCount;
+
+        const cofoRecordCount = tbody.rows.length;
+        if (countBadge) countBadge.textContent = cofoRecordCount;
+        if (totalCount) totalCount.textContent = cofoRecordCount;
     }
-    
-    createEntityDeduplicationMap(entities) {
-        /**
-         * Deduplicates entities by name + type and assigns TMP IDs
-         * Returns a map: "entity_name:entity_type" => "TMP-1"
-         * 
-         * This ensures:
-         * 1. No duplicate entities in the preview
-         * 2. Each unique entity gets one sequential TMP ID
-         * 3. Customers can reference their entity via this map
-         */
-        const entityMap = {};
-        const seenEntities = new Set();
-        let tmpCounter = 1;
+
+    renderFileNumberPreview() {
+        const tbody = document.getElementById('filenumber-preview-body');
+        const countBadge = document.getElementById('filenumber-preview-count');
+        const totalCount = document.getElementById('filenumber-total-count');
+
+        if (!tbody || !this.currentData) return;
+
+        tbody.innerHTML = '';
+        let serialNumber = 1;
         
-        // Filter out duplicates and assign TMP IDs
-        entities.forEach(entity => {
-            const entityKey = `${entity.entity_name}:${entity.entity_type}`;
-            
-            if (!seenEntities.has(entityKey)) {
-                seenEntities.add(entityKey);
-                const tmpId = `TMP-${tmpCounter}`;
-                entityMap[entityKey] = tmpId;
-                entity.tmp_id = tmpId; // Store on entity for rendering
-                tmpCounter++;
-            }
+        this.currentData.forEach((record, idx) => {
+            if (!record.file_number) return;  // Skip records without file number
+
+            // Combine District and LGA for Location
+            const locationParts = [];
+            if (record.district) locationParts.push(record.district);
+            if (record.lga) locationParts.push(record.lga);
+            const location = locationParts.length > 0 ? locationParts.join(', ') : '—';
+
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td class="text-center"><strong>${serialNumber}</strong></td>
+                <td><code>${record.file_number || '—'}</code></td>
+                <td>${record.file_title || '—'}</td>
+                <td>${record.plot_number || '—'}</td>
+                <td>${record.tp_no || '—'}</td>
+                <td>${location}</td>
+            `;
+            tbody.appendChild(row);
+            serialNumber++;
         });
-        
-        return entityMap;
+
+        const fileNumberRecordCount = tbody.rows.length;
+        if (countBadge) countBadge.textContent = fileNumberRecordCount;
+        if (totalCount) totalCount.textContent = fileNumberRecordCount;
     }
     
     getTypeClass(type) {
@@ -1611,6 +1554,74 @@ class FileIndexingManager {
     truncate(text, length) {
         if (!text) return '';
         return text.length > length ? text.substring(0, length) + '...' : text;
+    }
+
+    formatDeedsTime(value) {
+        if (value === null || value === undefined) {
+            return '—';
+        }
+
+        const raw = String(value).trim();
+        if (!raw) {
+            return '—';
+        }
+
+        const upper = raw.toUpperCase();
+        if (upper.endsWith('AM') || upper.endsWith('PM')) {
+            // Ensure there is a space before the period marker
+            const period = upper.slice(-2);
+            const base = upper.slice(0, -2).trim();
+            return base ? `${base} ${period}` : `12:00 ${period}`;
+        }
+
+        const numericCandidate = upper.replace(/[^0-9]/g, '');
+        const colonNormalized = upper.replace(/[^0-9:]/g, '');
+        let hour;
+        let minutes;
+        let seconds = null;
+
+        if (colonNormalized.includes(':')) {
+            const segments = colonNormalized.split(':').filter(segment => segment !== '');
+            if (segments.length === 0) {
+                return raw;
+            }
+
+            hour = parseInt(segments[0], 10);
+            if (Number.isNaN(hour)) {
+                return raw;
+            }
+
+            minutes = segments[1] ? segments[1].padStart(2, '0').slice(0, 2) : '00';
+            seconds = segments[2] ? segments[2].padStart(2, '0').slice(0, 2) : null;
+        } else {
+            const match = numericCandidate.match(/^([0-9]{1,2})([0-9]{2})([0-9]{2})?$/);
+            if (!match) {
+                return raw;
+            }
+
+            hour = parseInt(match[1], 10);
+            minutes = match[2];
+            seconds = match[3] || null;
+        }
+
+        minutes = minutes.padStart(2, '0');
+        if (seconds) {
+            seconds = seconds.padStart(2, '0');
+        }
+
+        let period = 'AM';
+        if (hour >= 12) {
+            period = 'PM';
+        }
+
+        hour = hour % 12;
+        if (hour === 0) {
+            hour = 12;
+        }
+
+        const hourDisplay = hour.toString().padStart(2, '0');
+        const timeCore = seconds ? `${hourDisplay}:${minutes}:${seconds}` : `${hourDisplay}:${minutes}`;
+        return `${timeCore} ${period}`;
     }
     
     showSection(sectionId) {

@@ -131,6 +131,7 @@ class Grouping(Base):
     registry = Column(String(100))
     group = Column(String(100))  # Group field
     sys_batch_no = Column(String(50))  # System batch number
+    registry_batch_no = Column(String(50))
     test_control = Column('test_control', String(20), default='PRODUCTION')
     tracking_id = Column(String(50))
 
@@ -143,17 +144,14 @@ class EntityStaging(Base):
     entity_name = Column(String(255), nullable=False, index=True)
     passport_photo = Column(String(500), nullable=True)  # URL only, can be NULL
     company_logo = Column(String(500), nullable=True)    # URL only, can be NULL
-    file_number = Column(String(100), nullable=True, index=True)  # Link to FileIndexing
-    import_batch = Column(String(50), nullable=False, index=True)  # UUID for tracking
-    created_by = Column(Integer, nullable=True)
-    updated_by = Column(Integer, nullable=True)
+    file_number = Column(String(100), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
     test_control = Column(String(20), default='PRODUCTION')
     
     __table_args__ = (
         Index('idx_entity_name_type', 'entity_name', 'entity_type'),
-        Index('idx_import_batch', 'import_batch'),
+        Index('idx_entity_test_control', 'test_control'),
     )
 
 
@@ -176,13 +174,14 @@ class CustomerStaging(Base):
     updated_at = Column(DateTime, nullable=True)
     deleted_at = Column(DateTime, nullable=True)  # Soft delete
     entity_id = Column(Integer, ForeignKey('entities_staging.id'), nullable=True, index=True)
-    file_number = Column(String(100), nullable=True, index=True)  # Link to FileIndexing
-    import_batch = Column(String(50), nullable=False, index=True)  # Same as EntityStaging
-    source_filename = Column(String(255), nullable=True)
+    test_control = Column(String(20), default='PRODUCTION')
+    file_number = Column(String(100), nullable=True, index=True)
+    account_no = Column(String(100), nullable=True)
+    reason_retired = Column(String(100), nullable=True)  # Revoked, Assignment, Power of Attorney, Surrender, Mortgage
     
     __table_args__ = (
         Index('idx_customer_name_type', 'customer_name', 'customer_type'),
-        Index('idx_import_batch', 'import_batch'),
+        Index('idx_customer_test_control', 'test_control'),
         Index('idx_status', 'status'),
     )
 
