@@ -29,8 +29,8 @@ class FileIndexing(Base):
     batch_id = Column(Integer)
     tracking_id = Column(String(50), unique=True)
     status = Column(String(50), default='Indexed')
-    created_by = Column(Integer, default=1)
-    updated_by = Column(Integer, nullable=True)
+    created_by = Column(String(255), nullable=True)
+    updated_by = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
     prop_id = Column('prop_id', String(100))
@@ -39,6 +39,7 @@ class FileIndexing(Base):
     # Fields from actual database schema
     sys_batch_no = Column(String(255))  # System batch number
     group = Column(String(255))  # Group field
+    registry_batch_no = Column(String(50))
     test_control = Column(String(20), default='PRODUCTION')
 
 

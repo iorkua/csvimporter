@@ -768,6 +768,7 @@ def _build_file_history_cofo_record(
     transaction_type: Optional[str],
     assignor: Optional[str],
     assignee: Optional[str],
+    instrument_type: Optional[str],
     land_use: Optional[str],
     location: Optional[str],
     transaction_date: Optional[str],
@@ -785,11 +786,13 @@ def _build_file_history_cofo_record(
     return {
         'mlsFNo': file_number,
         'transaction_type': transaction_type,
-        'instrument_type': transaction_type,
+        'instrument_type': instrument_type or transaction_type,
         'Grantor': assignor,
         'Grantee': assignee,
         'Assignor': assignor,
         'Assignee': assignee,
+        'grantor_assignor': assignor,
+        'grantee_assignee': assignee,
         'land_use': land_use,
         'property_description': location,
         'location': location,
@@ -804,6 +807,7 @@ def _build_file_history_cofo_record(
         'created_by': created_by,
         'reg_date': reg_date,
         'reg_date_raw': reg_date_raw,
+        'cofo_date': reg_date,
         'source': 'File History',
         'migration_source': 'File History',
         'migrated_by': 'File History Import',
@@ -824,9 +828,34 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
         if not file_number:
             continue
 
-        transaction_type = _normalize_string(row.get('Transaction Type'))
-        assignor = _normalize_string(row.get('Original Holder (Assignor)'))
-        assignee = _normalize_string(row.get('Current Holder (Assignee)'))
+        instrument_type_value = (
+            _normalize_string(row.get('Instrument Type'))
+            or _normalize_string(row.get('Instrument_type'))
+            or _normalize_string(row.get('InstrumentType'))
+            or _normalize_string(row.get('instrument_type'))
+        )
+
+        transaction_type = (
+            _normalize_string(row.get('Transaction Type'))
+            or _normalize_string(row.get('TransactionType'))
+            or _normalize_string(row.get('transaction_type'))
+            or instrument_type_value
+        )
+
+        assignor = (
+            _normalize_string(row.get('Original Holder (Assignor)'))
+            or _normalize_string(row.get('Assignor'))
+            or _normalize_string(row.get('Grantor'))
+            or _normalize_string(row.get('Original Holder'))
+        )
+
+        assignee = (
+            _normalize_string(row.get('Current Holder (Assignee)'))
+            or _normalize_string(row.get('Assignee'))
+            or _normalize_string(row.get('Grantee'))
+            or _normalize_string(row.get('Assignee (Current Holder)'))
+            or _normalize_string(row.get('Current Holder'))
+        )
         land_use = _normalize_string(row.get('Landuse'))
         location = _normalize_string(row.get('Location'))
 
@@ -852,11 +881,13 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
             'pageNo': page_no,
             'volumeNo': volume_no,
             'regNo': reg_no,
-            'instrument_type': transaction_type,
+            'instrument_type': instrument_type_value or transaction_type,
             'Grantor': assignor,
             'Assignor': assignor,
+            'grantor_assignor': assignor,
             'Grantee': assignee,
             'Assignee': assignee,
+            'grantee_assignee': assignee,
             'property_description': location,
             'location': location,
             'streetName': None,
@@ -886,11 +917,12 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
 
         property_records.append(property_record)
 
-        cofo_records.append(_build_file_history_cofo_record(
+        cofo_record = _build_file_history_cofo_record(
             file_number=file_number,
             transaction_type=transaction_type,
             assignor=assignor,
             assignee=assignee,
+            instrument_type=instrument_type_value,
             land_use=land_use,
             location=location,
             transaction_date=transaction_date,
@@ -904,7 +936,9 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
             created_by=created_by,
             reg_date=reg_date,
             reg_date_raw=reg_date_raw
-        ))
+        )
+
+        cofo_records.append(cofo_record)
 
     return property_records, cofo_records
 
@@ -1003,6 +1037,26 @@ def _set_property_record_field(
 ) -> None:
     normalized = _normalize_string(value)
 
+    if field in ('Assignor', 'Grantor', 'grantor_assignor'):
+        record['Assignor'] = normalized
+        record['Grantor'] = normalized
+        record['grantor_assignor'] = normalized
+        if cofo_record is not None:
+            cofo_record['Assignor'] = normalized
+            cofo_record['Grantor'] = normalized
+            cofo_record['grantor_assignor'] = normalized
+        return
+
+    if field in ('Assignee', 'Grantee', 'grantee_assignee'):
+        record['Assignee'] = normalized
+        record['Grantee'] = normalized
+        record['grantee_assignee'] = normalized
+        if cofo_record is not None:
+            cofo_record['Assignee'] = normalized
+            cofo_record['Grantee'] = normalized
+            cofo_record['grantee_assignee'] = normalized
+        return
+
     if field == 'mlsFNo':
         record['mlsFNo'] = normalized
         record['fileno'] = normalized
@@ -1015,20 +1069,6 @@ def _set_property_record_field(
         if cofo_record is not None:
             cofo_record['transaction_type'] = normalized
             cofo_record['instrument_type'] = normalized
-    elif field == 'Assignor':
-        record['Assignor'] = normalized
-        record['Grantor'] = normalized
-        record['grantor_assignor'] = normalized
-        if cofo_record is not None:
-            cofo_record['Assignor'] = normalized
-            cofo_record['Grantor'] = normalized
-    elif field == 'Assignee':
-        record['Assignee'] = normalized
-        record['Grantee'] = normalized
-        record['grantee_assignee'] = normalized
-        if cofo_record is not None:
-            cofo_record['Assignee'] = normalized
-            cofo_record['Grantee'] = normalized
     elif field == 'land_use':
         record['land_use'] = normalized
     elif field == 'location':
@@ -1085,6 +1125,26 @@ def _set_cofo_record_field(
 ) -> None:
     normalized = _normalize_string(value)
 
+    if field in ('Assignor', 'Grantor', 'grantor_assignor'):
+        cofo_record['Assignor'] = normalized
+        cofo_record['Grantor'] = normalized
+        cofo_record['grantor_assignor'] = normalized
+        if property_record is not None:
+            property_record['Assignor'] = normalized
+            property_record['Grantor'] = normalized
+            property_record['grantor_assignor'] = normalized
+        return
+
+    if field in ('Assignee', 'Grantee', 'grantee_assignee'):
+        cofo_record['Assignee'] = normalized
+        cofo_record['Grantee'] = normalized
+        cofo_record['grantee_assignee'] = normalized
+        if property_record is not None:
+            property_record['Assignee'] = normalized
+            property_record['Grantee'] = normalized
+            property_record['grantee_assignee'] = normalized
+        return
+
     if field == 'mlsFNo':
         cofo_record['mlsFNo'] = normalized
         if property_record is not None:
@@ -1097,20 +1157,6 @@ def _set_cofo_record_field(
         if property_record is not None:
             property_record['transaction_type'] = normalized
             property_record['instrument_type'] = normalized
-    elif field == 'Assignor':
-        cofo_record['Assignor'] = normalized
-        cofo_record['Grantor'] = normalized
-        if property_record is not None:
-            property_record['Assignor'] = normalized
-            property_record['Grantor'] = normalized
-            property_record['grantor_assignor'] = normalized
-    elif field == 'Assignee':
-        cofo_record['Assignee'] = normalized
-        cofo_record['Grantee'] = normalized
-        if property_record is not None:
-            property_record['Assignee'] = normalized
-            property_record['Grantee'] = normalized
-            property_record['grantee_assignee'] = normalized
     elif field == 'transaction_date':
         cofo_record['transaction_date'] = normalized
         cofo_record['transaction_date_raw'] = normalized
@@ -1443,6 +1489,14 @@ async def import_file_history(session_id: str):
                 'instrument_type': record.get('instrument_type'),
                 'Grantor': record.get('Grantor'),
                 'Grantee': record.get('Grantee'),
+                'Assignor': record.get('Assignor'),
+                'Assignee': record.get('Assignee'),
+                'Mortgagor': record.get('Mortgagor'),
+                'Mortgagee': record.get('Mortgagee'),
+                'Surrenderor': record.get('Surrenderor'),
+                'Surrenderee': record.get('Surrenderee'),
+                'Lessor': record.get('Lessor'),
+                'Lessee': record.get('Lessee'),
                 'property_description': record.get('property_description'),
                 'location': record.get('location'),
                 'streetName': record.get('streetName'),
@@ -2193,49 +2247,84 @@ def _import_property_record(db, record, timestamp, *, allow_update: bool = True,
     params['transaction_date'] = _coerce_sql_date(params.get('transaction_date'))
     params['date_created'] = _coerce_sql_date(params.get('date_created'))
 
+    role_fields: Tuple[Tuple[str, str], ...] = ()
+    if staging_table == 'file_history':
+        role_fields = (
+            ('Assignor', ':Assignor'),
+            ('Assignee', ':Assignee'),
+            ('Mortgagor', ':Mortgagor'),
+            ('Mortgagee', ':Mortgagee'),
+            ('Surrenderor', ':Surrenderor'),
+            ('Surrenderee', ':Surrenderee'),
+            ('Lessor', ':Lessor'),
+            ('Lessee', ':Lessee')
+        )
+        for field, _ in role_fields:
+            params.setdefault(field, None)
+
+    update_fields: List[Tuple[str, str]] = [
+        ('transaction_type', ':transaction_type'),
+        ('transaction_date', ':transaction_date'),
+        ('serialNo', ':serialNo'),
+        ('oldKNNo', ':oldKNNo'),
+        ('pageNo', ':pageNo'),
+        ('volumeNo', ':volumeNo'),
+        ('regNo', ':regNo'),
+        ('instrument_type', ':instrument_type'),
+        ('Grantor', ':Grantor'),
+        ('Grantee', ':Grantee'),
+    ]
+
+    if role_fields:
+        update_fields.extend(role_fields)
+
+    update_fields.extend([
+        ('property_description', ':property_description'),
+        ('location', ':location'),
+        ('streetName', ':streetName'),
+        ('house_no', ':house_no'),
+        ('districtName', ':districtName'),
+        ('plot_no', ':plot_no'),
+        ('lgsaOrCity', ':lgsaOrCity'),
+        ('plot_size', ':plot_size'),
+        ('prop_id', ':prop_id'),
+        ('test_control', ':test_control'),
+        ('updated_at', ':updated_at')
+    ])
+
+    set_clause = ",\n                ".join(f"{column} = {placeholder}" for column, placeholder in update_fields)
+
+    insert_columns = [
+        'mlsFNo', 'fileno', 'transaction_type', 'transaction_date', 'serialNo', 'oldKNNo', 'pageNo', 'volumeNo', 'regNo',
+        'instrument_type', 'Grantor', 'Grantee'
+    ]
+
+    if role_fields:
+        insert_columns.extend([column for column, _ in role_fields])
+
+    insert_columns.extend([
+        'property_description', 'location', 'streetName', 'house_no',
+        'districtName', 'plot_no', 'lgsaOrCity', 'source', 'plot_size', 'migrated_by', 'prop_id', 'created_at',
+        'created_by', 'date_created', 'migration_source', 'test_control'
+    ])
+
+    insert_placeholders = [f":{column}" for column in insert_columns]
+
     if existing:
-        # Update existing record
         db.execute(text(f"""
             UPDATE {staging_table} SET
-                transaction_type = :transaction_type,
-                transaction_date = :transaction_date,
-                serialNo = :serialNo,
-                oldKNNo = :oldKNNo,
-                pageNo = :pageNo,
-                volumeNo = :volumeNo,
-                regNo = :regNo,
-                instrument_type = :instrument_type,
-                Grantor = :Grantor,
-                Grantee = :Grantee,
-                property_description = :property_description,
-                location = :location,
-                streetName = :streetName,
-                house_no = :house_no,
-                districtName = :districtName,
-                plot_no = :plot_no,
-                lgsaOrCity = :lgsaOrCity,
-                plot_size = :plot_size,
-                prop_id = :prop_id,
-                test_control = :test_control,
-                updated_at = :updated_at
+                {set_clause}
             WHERE mlsFNo = :mlsFNo
         """), {
             **params,
             'updated_at': timestamp
         })
     else:
-        # Insert new record
         db.execute(text(f"""
             INSERT INTO {staging_table} (
-                mlsFNo, fileno, transaction_type, transaction_date, serialNo, oldKNNo, pageNo, volumeNo, regNo,
-                instrument_type, Grantor, Grantee, property_description, location, streetName, house_no,
-                districtName, plot_no, lgsaOrCity, source, plot_size, migrated_by, prop_id, created_at,
-                created_by, date_created, migration_source, test_control
+                {', '.join(insert_columns)}
             ) VALUES (
-                :mlsFNo, :fileno, :transaction_type, :transaction_date, :serialNo, :oldKNNo, :pageNo, :volumeNo, :regNo,
-                :instrument_type, :Grantor, :Grantee, :property_description, :location, :streetName, :house_no,
-                :districtName, :plot_no, :lgsaOrCity, :source, :plot_size, :migrated_by, :prop_id, :created_at,
-                :created_by, :date_created, :migration_source, :test_control
+                {', '.join(insert_placeholders)}
             )
         """), {
             **params,

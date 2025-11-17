@@ -18,6 +18,12 @@ class FileIndexingManager {
         this.pageSizeOptions = [10, 25, 50, 100];
         this.pageSize = 25;
         this.currentPage = 1;
+        this.cofoRecordIndices = [];
+        this.fileNumberRecordIndices = [];
+        this.cofoPreviewNeedsRender = false;
+        this.fileNumberPreviewNeedsRender = false;
+        this.COFO_PREVIEW_LIMIT = 300;
+        this.FILE_NUMBER_PREVIEW_LIMIT = 500;
         this.testControlSelect = document.getElementById('testControlSelect');
         this.testControlMode = this.testControlSelect?.value && this.testControlSelect.value !== ''
             ? this.testControlSelect.value.toUpperCase()
@@ -100,6 +106,14 @@ class FileIndexingManager {
             if (!Number.isNaN(targetPage)) {
                 this.goToPage(targetPage);
             }
+        });
+
+        document.getElementById('cofo-preview-tab')?.addEventListener('shown.bs.tab', () => {
+            this.renderCoFOPreview({ force: true });
+        });
+
+        document.getElementById('filenumber-preview-tab')?.addEventListener('shown.bs.tab', () => {
+            this.renderFileNumberPreview({ force: true });
         });
 
         this.updateUploadButtonState();
@@ -383,8 +397,7 @@ class FileIndexingManager {
             this.renderPreviewTable();
             this.renderGroupingPreview();
             this.renderQCIssues();
-            this.renderCoFOPreview();  // NEW
-            this.renderFileNumberPreview();  // NEW
+            this.prepareDeferredPreviews();
             this.showSection('preview-section');
             this.updateUploadButtonState();
             
@@ -861,6 +874,96 @@ class FileIndexingManager {
             const normalized = String(value).trim();
             return normalized.length > 0 && normalized.toLowerCase() !== 'nan';
         });
+    }
+
+    prepareDeferredPreviews() {
+        this.cofoRecordIndices = [];
+        this.fileNumberRecordIndices = [];
+
+        this.currentData.forEach((record, index) => {
+            if (this.recordHasCofoPayload(record)) {
+                this.cofoRecordIndices.push(index);
+            }
+            if (record && record.file_number && String(record.file_number).trim() !== '') {
+                this.fileNumberRecordIndices.push(index);
+            }
+        });
+
+        this.updateCofoPreviewCounts();
+        this.updateFileNumberPreviewCounts();
+
+        this.cofoPreviewNeedsRender = true;
+        this.fileNumberPreviewNeedsRender = true;
+
+        this.clearCofoPreviewTable();
+        this.clearFileNumberPreviewTable();
+
+        if (this.isPaneActive('cofo-preview-pane')) {
+            this.renderCoFOPreview({ force: true });
+        }
+
+        if (this.isPaneActive('filenumber-preview-pane')) {
+            this.renderFileNumberPreview({ force: true });
+        }
+    }
+
+    updateCofoPreviewCounts() {
+        const total = this.cofoRecordIndices.length;
+        const countBadge = document.getElementById('cofo-preview-count');
+        const totalCount = document.getElementById('cofo-total-count');
+        if (countBadge) {
+            countBadge.textContent = total;
+        }
+        if (totalCount) {
+            totalCount.textContent = total;
+        }
+    }
+
+    updateFileNumberPreviewCounts() {
+        const total = this.fileNumberRecordIndices.length;
+        const countBadge = document.getElementById('filenumber-preview-count');
+        const totalCount = document.getElementById('filenumber-total-count');
+        if (countBadge) {
+            countBadge.textContent = total;
+        }
+        if (totalCount) {
+            totalCount.textContent = total;
+        }
+    }
+
+    clearCofoPreviewTable() {
+        const tbody = document.getElementById('cofo-preview-body');
+        if (!tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+        const placeholder = document.createElement('tr');
+        const message = this.cofoRecordIndices.length === 0
+            ? 'No CofO records detected.'
+            : 'CofO preview loads when you open this tab.';
+        placeholder.innerHTML = `<td colspan="9" class="text-muted text-center py-3">${message}</td>`;
+        tbody.appendChild(placeholder);
+    }
+
+    clearFileNumberPreviewTable() {
+        const tbody = document.getElementById('filenumber-preview-body');
+        if (!tbody) {
+            return;
+        }
+
+        tbody.innerHTML = '';
+        const placeholder = document.createElement('tr');
+        const message = this.fileNumberRecordIndices.length === 0
+            ? 'No file numbers detected.'
+            : 'File number preview loads when you open this tab.';
+        placeholder.innerHTML = `<td colspan="6" class="text-muted text-center py-3">${message}</td>`;
+        tbody.appendChild(placeholder);
+    }
+
+    isPaneActive(paneId) {
+        const pane = document.getElementById(paneId);
+        return pane ? pane.classList.contains('show') && pane.classList.contains('active') : false;
     }
 
     updatePropIdColumnVisibility() {
@@ -1442,7 +1545,9 @@ class FileIndexingManager {
         
         // Start polling
         setTimeout(poll, 500); // Start after 500ms
-    }    resetInterface() {
+    }
+
+    resetInterface() {
         // Clear data
         this.currentData = [];
         this.multipleOccurrences = {};
@@ -1453,8 +1558,16 @@ class FileIndexingManager {
         this.selectedRows.clear();
         this.currentSessionId = null;
         this.currentPage = 1;
+        this.cofoRecordIndices = [];
+        this.fileNumberRecordIndices = [];
+        this.cofoPreviewNeedsRender = false;
+        this.fileNumberPreviewNeedsRender = false;
         this.renderPreviewTable();
         this.renderGroupingPreview();
+        this.updateCofoPreviewCounts();
+        this.updateFileNumberPreviewCounts();
+        this.clearCofoPreviewTable();
+        this.clearFileNumberPreviewTable();
         
         // Reset UI
         document.getElementById('csvFile').value = '';
@@ -1470,23 +1583,38 @@ class FileIndexingManager {
     
     // Staging Preview Functions (NEW)
 
-    renderCoFOPreview() {
+    renderCoFOPreview({ force = false } = {}) {
+        if (!force && !this.cofoPreviewNeedsRender) {
+            return;
+        }
+
         const tbody = document.getElementById('cofo-preview-body');
-        const countBadge = document.getElementById('cofo-preview-count');
-        const totalCount = document.getElementById('cofo-total-count');
+        if (!tbody) {
+            return;
+        }
 
-        if (!tbody || !this.currentData) return;
-
+        this.cofoPreviewNeedsRender = false;
         tbody.innerHTML = '';
-        let serialNumber = 1;
-        
-        this.currentData.forEach((record, idx) => {
-            if (!this.recordHasCofoPayload(record)) return;  // Skip records without any CofO signal
 
+        const total = this.cofoRecordIndices.length;
+        this.updateCofoPreviewCounts();
+
+        if (total === 0) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = '<td colspan="9" class="text-center text-muted py-3">No CofO records detected.</td>';
+            tbody.appendChild(emptyRow);
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        const limit = this.COFO_PREVIEW_LIMIT;
+
+        this.cofoRecordIndices.slice(0, limit).forEach((recordIndex, position) => {
+            const record = this.currentData[recordIndex];
             const formattedDeedsTime = this.formatDeedsTime(record.deeds_time);
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td class="text-center"><strong>${serialNumber}</strong></td>
+                <td class="text-center"><strong>${position + 1}</strong></td>
                 <td><code>${record.file_number || '—'}</code></td>
                 <td>${record.cofo_date || '—'}</td>
                 <td>${record.deeds_date || '—'}</td>
@@ -1496,50 +1624,77 @@ class FileIndexingManager {
                 <td><code>${record.page_no || '—'}</code></td>
                 <td><code>${record.vol_no || '—'}</code></td>
             `;
-            tbody.appendChild(row);
-            serialNumber++;
+            fragment.appendChild(row);
         });
 
-        const cofoRecordCount = tbody.rows.length;
-        if (countBadge) countBadge.textContent = cofoRecordCount;
-        if (totalCount) totalCount.textContent = cofoRecordCount;
+        tbody.appendChild(fragment);
+
+        if (total > limit) {
+            const noteRow = document.createElement('tr');
+            noteRow.innerHTML = `<td colspan="9" class="text-muted small">Showing first ${limit} of ${total} CofO records. Export or paginate data for the full list.</td>`;
+            tbody.appendChild(noteRow);
+        }
     }
 
-    renderFileNumberPreview() {
+    renderFileNumberPreview({ force = false } = {}) {
+        if (!force && !this.fileNumberPreviewNeedsRender) {
+            return;
+        }
+
         const tbody = document.getElementById('filenumber-preview-body');
-        const countBadge = document.getElementById('filenumber-preview-count');
-        const totalCount = document.getElementById('filenumber-total-count');
+        if (!tbody) {
+            return;
+        }
 
-        if (!tbody || !this.currentData) return;
-
+        this.fileNumberPreviewNeedsRender = false;
         tbody.innerHTML = '';
-        let serialNumber = 1;
-        
-        this.currentData.forEach((record, idx) => {
-            if (!record.file_number) return;  // Skip records without file number
 
-            // Combine District and LGA for Location
+        const total = this.fileNumberRecordIndices.length;
+        this.updateFileNumberPreviewCounts();
+
+        if (total === 0) {
+            const emptyRow = document.createElement('tr');
+            emptyRow.innerHTML = '<td colspan="6" class="text-center text-muted py-3">No file numbers detected.</td>';
+            tbody.appendChild(emptyRow);
+            return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        const limit = this.FILE_NUMBER_PREVIEW_LIMIT;
+
+        this.fileNumberRecordIndices.slice(0, limit).forEach((recordIndex, position) => {
+            const record = this.currentData[recordIndex];
             const locationParts = [];
-            if (record.district) locationParts.push(record.district);
-            if (record.lga) locationParts.push(record.lga);
+            if (record.district) {
+                locationParts.push(record.district);
+            }
+            if (record.lga) {
+                locationParts.push(record.lga);
+            }
             const location = locationParts.length > 0 ? locationParts.join(', ') : '—';
+
+            const registryBatch = record.registry_batch_no || '—';
 
             const row = document.createElement('tr');
             row.innerHTML = `
-                <td class="text-center"><strong>${serialNumber}</strong></td>
+                <td class="text-center"><strong>${position + 1}</strong></td>
                 <td><code>${record.file_number || '—'}</code></td>
                 <td>${record.file_title || '—'}</td>
                 <td>${record.plot_number || '—'}</td>
                 <td>${record.tp_no || '—'}</td>
                 <td>${location}</td>
+                <td>${registryBatch}</td>
             `;
-            tbody.appendChild(row);
-            serialNumber++;
+            fragment.appendChild(row);
         });
 
-        const fileNumberRecordCount = tbody.rows.length;
-        if (countBadge) countBadge.textContent = fileNumberRecordCount;
-        if (totalCount) totalCount.textContent = fileNumberRecordCount;
+        tbody.appendChild(fragment);
+
+        if (total > limit) {
+            const noteRow = document.createElement('tr');
+            noteRow.innerHTML = `<td colspan="6" class="text-muted small">Showing first ${limit} of ${total} file indexing rows.</td>`;
+            tbody.appendChild(noteRow);
+        }
     }
     
     getTypeClass(type) {

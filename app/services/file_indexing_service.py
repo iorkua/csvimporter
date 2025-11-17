@@ -740,6 +740,7 @@ def _apply_grouping_updates(
         'shelf_location': shelf_location,
         'group': None,
         'sys_batch_no': None,
+        'registry_batch_no': None,
         'tracking_id': record.get('tracking_id'),
         'grouping_record': grouping_row
     }
@@ -780,6 +781,9 @@ def _apply_grouping_updates(
         # Copy sys_batch_no from grouping to result (for file indexing)  
         if grouping_row.sys_batch_no:
             result['sys_batch_no'] = grouping_row.sys_batch_no
+
+        if grouping_row.registry_batch_no:
+            result['registry_batch_no'] = grouping_row.registry_batch_no
 
         # Adopt tracking id from grouping when available; otherwise cascade from record
         if grouping_row.tracking_id:

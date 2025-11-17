@@ -15,7 +15,15 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.core import session_manager
-from app.models.database import CofO, FileIndexing, FileNumber, Grouping, SessionLocal
+from app.models.database import (
+    CofO,
+    FileIndexing,
+    FileNumber,
+    Grouping,
+    SessionLocal,
+    EntityStaging,
+    CustomerStaging,
+)
 from app.services.file_indexing_service import (
     analyze_file_number_occurrences,
     process_file_indexing_data,
@@ -393,6 +401,7 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
             record['shelf_location'] = grouping_result.get('shelf_location')
             record['group'] = grouping_result.get('group')
             record['sys_batch_no'] = grouping_result.get('sys_batch_no')
+            record['registry_batch_no'] = grouping_result.get('registry_batch_no')
 
             # Helper function to safely convert batch_no to integer
             def safe_int_conversion(value):
@@ -404,13 +413,21 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
                     return None
 
             created_by_raw = record.get('created_by')
-            created_by_value = safe_int_conversion(created_by_raw)
+            created_by_numeric = safe_int_conversion(created_by_raw)
             normalized_created_by = _normalize_string(created_by_raw)
-            if created_by_value is None and not normalized_created_by:
-                logger.warning("Created By missing for file number %s; preserving existing values where possible", file_number)
-            record['created_by'] = (
-                str(created_by_value) if created_by_value is not None else (normalized_created_by or '')
+            created_by_resolved = (
+                str(created_by_numeric)
+                if created_by_numeric is not None
+                else normalized_created_by
             )
+
+            if not created_by_resolved:
+                logger.warning("Created By missing for file number %s; preserving existing values where possible", file_number)
+
+            record['created_by'] = created_by_resolved or ''
+
+            prop_id_value = _normalize_string(record.get('prop_id'))
+            record['prop_id'] = prop_id_value or record.get('prop_id') or ''
 
             normalized_cofo_date = _normalize_cofo_date(record.get('cofo_date'))
             record['cofo_date'] = normalized_cofo_date or ''
@@ -432,7 +449,8 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
                 'shelf_location': _normalize_string(record.get('shelf_location')) or '',
                 'serial_no': _normalize_string(record.get('serial_no')) or '',
                 'group': _normalize_string(record.get('group')) or '',  # Copy group from grouping table
-                'sys_batch_no': _normalize_string(record.get('sys_batch_no')) or ''  # Copy sys_batch_no from grouping table
+                'sys_batch_no': _normalize_string(record.get('sys_batch_no')) or '',  # Copy sys_batch_no from grouping table
+                'registry_batch_no': _normalize_string(record.get('registry_batch_no')) or ''  # Copy registry_batch_no as well
             }
 
             if existing_indexing:
@@ -440,10 +458,14 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
                     setattr(existing_indexing, field, value)
                 existing_indexing.tracking_id = tracking_id
                 existing_indexing.updated_at = now
-                if created_by_value is not None:
-                    existing_indexing.updated_by = created_by_value
-                    if existing_indexing.created_by is None:
-                        existing_indexing.created_by = created_by_value
+                if created_by_resolved:
+                    existing_indexing.updated_by = created_by_resolved
+                    if not existing_indexing.created_by:
+                        existing_indexing.created_by = created_by_resolved
+                if prop_id_value:
+                    existing_indexing.prop_id = prop_id_value
+                if record.get('registry_batch_no'):
+                    existing_indexing.registry_batch_no = _normalize_string(record.get('registry_batch_no')) or ''
                 existing_indexing.test_control = test_control
             else:
                 file_record = FileIndexing(
@@ -451,8 +473,9 @@ def _process_import_data(session_data: Dict[str, Any], progress_key: str = None)
                     tracking_id=tracking_id,
                     status='Indexed',
                     created_at=now,
-                    created_by=created_by_value if created_by_value is not None else None,
-                    updated_by=created_by_value if created_by_value is not None else None,
+                    created_by=created_by_resolved,
+                    updated_by=created_by_resolved,
+                    prop_id=prop_id_value,
                     test_control=test_control,
                     **payload
                 )

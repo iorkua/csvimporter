@@ -122,6 +122,8 @@ def extract_entity_and_customer_data(
     is_pra = normalized_source == 'pra'
     is_pic = normalized_source == 'pic'
     is_pra = normalized_source == 'pra'
+    is_pic = normalized_source == 'pic'
+    is_pra = normalized_source == 'pra'
 
     for idx, record in enumerate(records):
         try:
