@@ -2,6 +2,7 @@
 class PRAImportManager {
     constructor() {
         this.propertyRecordsData = [];
+        this.cofoRecordsData = [];
         this.fileNumbersData = [];
         this.fileNumberQcData = [];
         this.entityStagingRecords = [];
@@ -72,6 +73,8 @@ class PRAImportManager {
         // Tab switching
         document.getElementById('property-records-tab')?.addEventListener('click', () => this.switchTab('property-records'));
         document.getElementById('file-numbers-tab')?.addEventListener('click', () => this.switchTab('file-numbers'));
+        document.getElementById('pra-cofo-tab')?.addEventListener('click', () => this.switchTab('cofo-records'));
+        document.getElementById('pra-other-instruments-tab')?.addEventListener('click', () => this.switchTab('other-instruments'));
         document.getElementById('file-number-qc-tab')?.addEventListener('click', () => this.switchTab('file-number-qc'));
         document.getElementById('pra-entities-tab')?.addEventListener('click', () => this.switchTab('entities'));
         document.getElementById('pra-customers-tab')?.addEventListener('click', () => this.switchTab('customers'));
@@ -238,14 +241,25 @@ class PRAImportManager {
             this.sessionId = result.session_id;
             this.setTestControlMode(result.test_control || this.testControlMode);
             this.propertyRecordsData = result.property_records || [];
+            this.cofoRecordsData = result.cofo_records || [];
             this.fileNumbersData = result.file_numbers || [];
             this.fileNumberQcData = result.file_number_qc || [];
             this.entityStagingRecords = result.entity_staging_preview || [];
             this.customerStagingRecords = result.customer_staging_preview || [];
             this.stagingSummary = result.staging_summary || {};
-            this.duplicates = result.duplicates || { csv: [], database: [] };
+            this.duplicates = this.flattenDuplicatePayload(result.duplicates);
             this.qcSummary = result.qc_summary || this.qcSummary;
             
+            if (Array.isArray(result.cofo_duplicates_ignored) && result.cofo_duplicates_ignored.length > 0) {
+                const skippedList = result.cofo_duplicates_ignored
+                    .map((item) => item.file_number)
+                    .filter(Boolean)
+                    .slice(0, 10)
+                    .join(', ');
+                const detail = skippedList ? ` (${skippedList}${result.cofo_duplicates_ignored.length > 10 ? '…' : ''})` : '';
+                this.showAlert(`Skipped importing ${result.cofo_duplicates_ignored.length} CofO record(s) because a matching CofO already exists${detail}.`, 'warning');
+            }
+
             this.updateStatistics(result);
             this.updateStagingDisplay();
             this.showDuplicates();
@@ -289,6 +303,8 @@ class PRAImportManager {
         document.getElementById('propertyRecordsCount').textContent = this.propertyRecordsData.length;
         document.getElementById('fileNumbersCount').textContent = this.fileNumbersData.length;
         document.getElementById('fileNumberQcCount').textContent = this.fileNumberQcData.length;
+        this.updateElementText('praCofoCount', this.getCofoRecords().length);
+        this.updateElementText('praOtherInstrumentCount', this.getOtherInstrumentRecords().length);
 
         document.getElementById('statisticsRow').style.display = 'flex';
 
@@ -299,6 +315,7 @@ class PRAImportManager {
             this.importButton.dataset.readyCount = String(readyCount);
         }
 
+        this.updateDerivedTableVisibility();
         this.updateModeControls();
     }
 
@@ -327,11 +344,14 @@ class PRAImportManager {
         this.currentTab = tabName;
         this.currentPage = 1;
 
-        const tableTabs = ['property-records', 'file-numbers'];
-        const filterVisible = tableTabs.includes(tabName);
-        const selectionVisible = tableTabs.includes(tabName);
-        const bulkVisible = tableTabs.includes(tabName);
-        const validateVisible = tableTabs.includes(tabName);
+        const filterTabs = ['property-records', 'file-numbers', 'cofo-records', 'other-instruments'];
+        const selectionTabs = ['property-records', 'file-numbers'];
+        const bulkTabs = ['property-records', 'file-numbers'];
+        const validateTabs = ['property-records', 'file-numbers'];
+        const filterVisible = filterTabs.includes(tabName);
+        const selectionVisible = selectionTabs.includes(tabName);
+        const bulkVisible = bulkTabs.includes(tabName);
+        const validateVisible = validateTabs.includes(tabName);
 
         if (this.filterButtons) {
             this.filterButtons.style.display = filterVisible ? 'inline-flex' : 'none';
@@ -359,7 +379,7 @@ class PRAImportManager {
             this.filteredData = Array.isArray(this.fileNumberQcData) ? [...this.fileNumberQcData] : [];
             this.renderTable();
             this.renderPagination();
-        } else if (tableTabs.includes(tabName)) {
+        } else if (filterTabs.includes(tabName)) {
             this.applyFilter();
         } else {
             this.filteredData = [];
@@ -524,6 +544,62 @@ class PRAImportManager {
         wrapper.style.display = 'block';
     }
 
+    flattenDuplicatePayload(payload = {}) {
+        const merged = { csv: [], database: [] };
+        if (!payload || typeof payload !== 'object') {
+            return merged;
+        }
+
+        const appendDuplicates = (entries, origin) => {
+            if (!Array.isArray(entries)) {
+                return;
+            }
+            entries.forEach((entry) => {
+                const clone = { ...entry, origin };
+                if (Array.isArray(clone.records)) {
+                    clone.records = clone.records.map((record) => ({ ...record, origin }));
+                }
+                if (origin === 'cofo') {
+                    clone.label = 'CofO';
+                } else if (origin === 'file_numbers') {
+                    clone.label = 'File Numbers';
+                } else {
+                    clone.label = 'Property Records';
+                }
+                merged.csv.push(clone);
+            });
+        };
+
+        const appendDatabaseDuplicates = (entries, origin) => {
+            if (!Array.isArray(entries)) {
+                return;
+            }
+            entries.forEach((entry) => {
+                const clone = { ...entry, origin };
+                if (Array.isArray(clone.records)) {
+                    clone.records = clone.records.map((record) => ({ ...record, origin }));
+                }
+                if (origin === 'cofo') {
+                    clone.label = 'CofO';
+                } else if (origin === 'file_numbers') {
+                    clone.label = 'File Numbers';
+                } else {
+                    clone.label = 'Property Records';
+                }
+                merged.database.push(clone);
+            });
+        };
+
+        appendDuplicates(payload.property_records?.csv, 'property_records');
+        appendDatabaseDuplicates(payload.property_records?.database, 'property_records');
+        appendDuplicates(payload.file_numbers?.csv, 'file_numbers');
+        appendDatabaseDuplicates(payload.file_numbers?.database, 'file_numbers');
+        appendDuplicates(payload.cofo_records?.csv, 'cofo');
+        appendDatabaseDuplicates(payload.cofo_records?.database, 'cofo');
+
+        return merged;
+    }
+
     showDuplicates() {
         const csvDuplicates = this.duplicates.csv || [];
         const dbDuplicates = this.duplicates.database || [];
@@ -617,15 +693,26 @@ class PRAImportManager {
             this.renderPagination();
             return;
         }
-
-        if (!['property-records', 'file-numbers'].includes(this.currentTab)) {
-            this.filteredData = [];
-            this.updateShowingInfo();
-            this.renderPagination();
-            return;
+        let sourceData;
+        switch (this.currentTab) {
+            case 'property-records':
+                sourceData = this.propertyRecordsData;
+                break;
+            case 'file-numbers':
+                sourceData = this.fileNumbersData;
+                break;
+            case 'cofo-records':
+                sourceData = this.getCofoRecords();
+                break;
+            case 'other-instruments':
+                sourceData = this.getOtherInstrumentRecords();
+                break;
+            default:
+                this.filteredData = [];
+                this.updateShowingInfo();
+                this.renderPagination();
+                return;
         }
-
-        const sourceData = this.currentTab === 'property-records' ? this.propertyRecordsData : this.fileNumbersData;
 
         switch (this.currentFilter) {
             case 'issues':
@@ -723,6 +810,10 @@ class PRAImportManager {
             tableBodyId = 'fileNumbersTableBody';
         } else if (this.currentTab === 'file-number-qc') {
             tableBodyId = 'fileNumberQcTableBody';
+        } else if (this.currentTab === 'cofo-records') {
+            tableBodyId = 'praCofoTableBody';
+        } else if (this.currentTab === 'other-instruments') {
+            tableBodyId = 'praOtherInstrumentsTableBody';
         }
         const tbody = document.getElementById(tableBodyId);
         if (!tbody) return;
@@ -740,6 +831,10 @@ class PRAImportManager {
                 tr = this.createPropertyRecordRow(record, actualIndex + 1, actualIndex);
             } else if (this.currentTab === 'file-numbers') {
                 tr = this.createFileNumberRow(record, actualIndex + 1, actualIndex);
+            } else if (this.currentTab === 'cofo-records') {
+                tr = this.createCofoRecordRow(record, actualIndex + 1, actualIndex);
+            } else if (this.currentTab === 'other-instruments') {
+                tr = this.createOtherInstrumentRow(record, actualIndex + 1, actualIndex);
             } else {
                 tr = this.createFileNumberQcRow(record, actualIndex + 1);
             }
@@ -747,6 +842,131 @@ class PRAImportManager {
         });
 
         this.updateShowingInfo();
+        this.updateDerivedTableVisibility();
+    }
+
+    getCofoRecords() {
+        if (!Array.isArray(this.cofoRecordsData)) {
+            return [];
+        }
+        return this.cofoRecordsData.filter((record) => record && record.is_cofo_record);
+    }
+
+    getOtherInstrumentRecords() {
+        if (!Array.isArray(this.propertyRecordsData)) {
+            return [];
+        }
+        return this.propertyRecordsData.filter((record) => !record?.is_cofo_record);
+    }
+
+    updateDerivedTableVisibility() {
+        const cofoWrapper = document.getElementById('praCofoTableWrapper');
+        const cofoEmpty = document.getElementById('praCofoEmpty');
+        const cofoTotal = this.getCofoRecords().length;
+        if (cofoWrapper && cofoEmpty) {
+            if (cofoTotal > 0) {
+                cofoWrapper.style.display = 'block';
+                cofoEmpty.classList.add('d-none');
+            } else {
+                cofoWrapper.style.display = 'none';
+                cofoEmpty.classList.remove('d-none');
+            }
+        }
+
+        const otherWrapper = document.getElementById('praOtherInstrumentsTableWrapper');
+        const otherEmpty = document.getElementById('praOtherInstrumentsEmpty');
+        const otherTotal = this.getOtherInstrumentRecords().length;
+        if (otherWrapper && otherEmpty) {
+            if (otherTotal > 0) {
+                otherWrapper.style.display = 'block';
+                otherEmpty.classList.add('d-none');
+            } else {
+                otherWrapper.style.display = 'none';
+                otherEmpty.classList.remove('d-none');
+            }
+        }
+    }
+
+    createCofoRecordRow(record, displayIndex, actualIndex) {
+        const tr = document.createElement('tr');
+        tr.dataset.index = actualIndex;
+
+        if (record?.hasIssues) {
+            tr.classList.add('table-warning');
+        }
+
+        const transactionType = this.sanitizeValue(record?.transaction_type ?? record?.instrument_type);
+        const grantor = this.sanitizeValue(record?.Grantor ?? record?.Assignor ?? record?.grantor_assignor);
+        const grantee = this.sanitizeValue(record?.Grantee ?? record?.Assignee ?? record?.grantee_assignee);
+        const transactionDate = this.sanitizeValue(record?.transaction_date ?? record?.transaction_date_raw);
+        const cofoDate = this.sanitizeValue(record?.cofo_date ?? record?.reg_date ?? record?.reg_date_raw);
+        const statusClass = record?.hasIssues ? 'bg-warning text-dark' : 'bg-success';
+        const statusLabel = record?.hasIssues ? 'Issues' : 'Valid';
+
+        tr.innerHTML = `
+            <td>${displayIndex}</td>
+            <td>${this.sanitizeValue(record?.mlsFNo)}</td>
+            <td>${transactionType}</td>
+            <td>${grantor}</td>
+            <td>${grantee}</td>
+            <td>${transactionDate}</td>
+            <td>${this.sanitizeValue(record?.serialNo)}</td>
+            <td>${this.sanitizeValue(record?.pageNo)}</td>
+            <td>${this.sanitizeValue(record?.volumeNo)}</td>
+            <td>${this.sanitizeValue(record?.regNo)}</td>
+            <td>${cofoDate}</td>
+            <td><span class="badge ${statusClass}">${statusLabel}</span></td>
+        `;
+
+        return tr;
+    }
+
+    createOtherInstrumentRow(record, displayIndex, actualIndex) {
+        const tr = document.createElement('tr');
+        tr.dataset.index = actualIndex;
+
+        if (record?.hasIssues) {
+            tr.classList.add('table-warning');
+        }
+
+        const instrumentType = this.sanitizeValue(record?.transaction_type ?? record?.instrument_type);
+        const grantor = this.sanitizeValue(record?.Grantor ?? record?.grantor_assignor);
+        const grantee = this.sanitizeValue(record?.Grantee ?? record?.grantee_assignee);
+        const transactionDate = this.sanitizeValue(record?.transaction_date ?? record?.transaction_date_raw);
+        const location = this.sanitizeValue(record?.location ?? record?.property_description);
+        const statusClass = record?.hasIssues ? 'bg-warning text-dark' : 'bg-success';
+        const statusLabel = record?.hasIssues ? 'Issues' : 'Valid';
+
+        tr.innerHTML = `
+            <td>${displayIndex}</td>
+            <td>${this.sanitizeValue(record?.mlsFNo)}</td>
+            <td>${instrumentType}</td>
+            <td>${grantor}</td>
+            <td>${grantee}</td>
+            <td>${transactionDate}</td>
+            <td>${this.sanitizeValue(record?.serialNo)}</td>
+            <td>${this.sanitizeValue(record?.pageNo)}</td>
+            <td>${this.sanitizeValue(record?.volumeNo)}</td>
+            <td>${this.sanitizeValue(record?.regNo)}</td>
+            <td>${this.sanitizeValue(record?.plot_no)}</td>
+            <td>${location}</td>
+            <td><span class="badge ${statusClass}">${statusLabel}</span></td>
+        `;
+
+        return tr;
+    }
+
+    createFileNumberQcRow(record, displayIndex) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${displayIndex}</td>
+            <td>${this.sanitizeValue(record?.file_number)}</td>
+            <td>${this.formatIssueType(record?.issue_type)}</td>
+            <td>${this.sanitizeValue(record?.description)}</td>
+            <td>${this.sanitizeValue(record?.suggested_fix)}</td>
+            <td>${this.sanitizeValue(record?.severity)}</td>
+        `;
+        return tr;
     }
 
     createPropertyRecordRow(record, displayIndex, actualIndex) {
@@ -916,6 +1136,7 @@ class PRAImportManager {
                     if (response.ok) {
                         const result = await response.json();
                         this.propertyRecordsData = result.property_records || [];
+                        this.cofoRecordsData = result.cofo_records || [];
                         this.fileNumbersData = result.file_numbers || [];
                         this.updateStatistics(result);
                         if (result.test_control) {
@@ -1259,15 +1480,27 @@ class PRAImportManager {
         }
         
         // Fallback to local deletion if API fails
-        sourceData.splice(sourceIndex, 1);
+        if (sourceIndex > -1) {
+            if (sourceIndex < this.propertyRecordsData.length) {
+                this.propertyRecordsData.splice(sourceIndex, 1);
+            }
+            if (sourceIndex < this.fileNumbersData.length) {
+                this.fileNumbersData.splice(sourceIndex, 1);
+            }
+            if (sourceIndex < this.cofoRecordsData.length) {
+                this.cofoRecordsData.splice(sourceIndex, 1);
+            }
+        }
+
         this.filteredData.splice(index, 1);
         this.renderTable();
         this.renderPagination();
-
-        document.getElementById('propertyRecordsCount').textContent = this.propertyRecordsData.length;
-        document.getElementById('fileNumbersCount').textContent = this.fileNumbersData.length;
-
+        this.updateElementText('propertyRecordsCount', this.propertyRecordsData.length);
+        this.updateElementText('fileNumbersCount', this.fileNumbersData.length);
+        this.updateElementText('praCofoCount', this.getCofoRecords().length);
+        this.updateElementText('praOtherInstrumentCount', this.getOtherInstrumentRecords().length);
         this.updateShowingInfo();
+        this.updateDerivedTableVisibility();
         this.showAlert('Record deleted successfully', 'success');
     }
 
@@ -1313,6 +1546,7 @@ class PRAImportManager {
     resetForm(options = {}) {
         const { keepMode = false, keepFileInput = false } = options;
         this.propertyRecordsData = [];
+        this.cofoRecordsData = [];
         this.fileNumbersData = [];
         this.fileNumberQcData = [];
         this.entityStagingRecords = [];
@@ -1322,6 +1556,8 @@ class PRAImportManager {
         this.sessionId = null;
         this.duplicates = { csv: [], database: [] };
         this.readyRecordCount = 0;
+        this.updateElementText('praCofoCount', 0);
+        this.updateElementText('praOtherInstrumentCount', 0);
         
         if (!keepFileInput) {
             const fileInput = document.getElementById('fileInput');
@@ -1358,6 +1594,7 @@ class PRAImportManager {
             this.importButton.dataset.readyCount = '0';
         }
 
+        this.updateDerivedTableVisibility();
         this.switchTab('property-records');
         this.updateModeControls();
     }
@@ -1502,6 +1739,7 @@ class PRAImportManager {
             
             // Update local data
             this.propertyRecordsData = result.property_records || [];
+            this.cofoRecordsData = result.cofo_records || [];
             this.fileNumbersData = result.file_numbers || [];
             
             // Refresh display
@@ -1562,6 +1800,7 @@ class PRAImportManager {
     }
 }
 
+ 
 // Initialize the PRA Import Manager when DOM is loaded
 let praManager;
 document.addEventListener('DOMContentLoaded', function() {

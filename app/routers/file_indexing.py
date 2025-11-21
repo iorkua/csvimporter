@@ -31,6 +31,7 @@ from app.services.file_indexing_service import (
     _assign_property_ids,
     _build_cofo_record,
     _build_grouping_preview,
+    _filter_existing_file_numbers_for_preview,
     _has_cofo_payload,
     _normalize_cofo_date,
     _normalize_time_field,
@@ -88,8 +89,13 @@ def _prepare_file_indexing_preview_payload(
     start_time = datetime.utcnow()
     logger.info("Starting preview payload build for %s (%d rows)", filename, len(dataframe))
     processed_df = process_file_indexing_data(dataframe)
-    records = processed_df.to_dict('records')
-    multiple_occurrences = analyze_file_number_occurrences(processed_df)
+    original_total_records = len(processed_df)
+    filtered_df, suppressed_existing = _filter_existing_file_numbers_for_preview(
+        processed_df,
+        test_control_value
+    )
+    records = filtered_df.to_dict('records')
+    multiple_occurrences = analyze_file_number_occurrences(filtered_df)
     logger.info("Post-processed dataframe for %s in %.3fs", filename, (datetime.utcnow() - start_time).total_seconds())
     
     # Skip grouping preview for large datasets to improve performance
@@ -135,6 +141,9 @@ def _prepare_file_indexing_preview_payload(
         "data": records,
         "multiple_occurrences": multiple_occurrences,
         "total_records": len(records),
+        "original_total_records": original_total_records,
+        "suppressed_existing_records": suppressed_existing,
+        "suppressed_existing_count": len(suppressed_existing),
         "grouping_preview": grouping_preview,
         "qc_issues": qc_issues,
         "property_assignments": property_id_assignments,
@@ -162,6 +171,8 @@ def _prepare_file_indexing_preview_payload(
     response_payload = {
         "filename": filename,
         "total_records": len(records),
+        "original_total_records": original_total_records,
+        "suppressed_existing_count": len(suppressed_existing),
         "multiple_occurrences_count": len(multiple_occurrences),
         "grouping_preview": grouping_preview,
         "qc_summary": qc_summary,
@@ -244,6 +255,9 @@ async def get_preview_data(session_id: str):
         "multiple_occurrences": session_data["multiple_occurrences"],
         "total_records": session_data["total_records"],
         "filename": session_data["filename"],
+        "original_total_records": session_data.get("original_total_records", session_data["total_records"]),
+        "suppressed_existing_records": session_data.get("suppressed_existing_records", []),
+        "suppressed_existing_count": session_data.get("suppressed_existing_count", 0),
         "grouping_preview": session_data.get("grouping_preview", {}),
         "qc_issues": session_data.get("qc_issues", {}),
         "property_assignments": session_data.get("property_assignments", []),

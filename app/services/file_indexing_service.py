@@ -30,6 +30,22 @@ _COFO_DATE_WARNING_CACHE: Set[str] = set()
 _MAX_COFO_DATE_WARNINGS = 25
 _COFO_DATE_CAP_LOGGED = False
 
+REASON_RETIRED_ALIAS_MAP = {
+    'assignment': 'Assignment',
+    'deed of assignment': 'Assignment',
+    'withdrawn': 'Withdrawn',
+    'withdraw': 'Withdrawn',
+    'withdrawal': 'Withdrawn',
+    'sub division': 'Sub Division',
+    'subdivision': 'Sub Division',
+    'subdivided': 'Sub Division',
+    'sub divide': 'Sub Division',
+    'menger': 'Menger',
+    'surrender': 'Surrender',
+    'revocation': 'Revocation',
+    'revoked': 'Revocation',
+}
+
 
 def _format_value(value, numeric: bool = False):
     """Format a value for display, removing unwanted .0 for numeric-like fields."""
@@ -97,6 +113,60 @@ def _normalize_numeric_field(value: Any) -> Optional[str]:
         return str(float_value)
     except (ValueError, TypeError):
         return string_value
+
+
+def _normalize_old_kn_number(value: Any) -> Optional[str]:
+    """Normalize Old KN Number by replacing hyphens with spaces.
+    Example: KN-101 -> KN 101, KN-102 -> KN 102"""
+    if value is None or pd.isna(value):
+        return None
+    
+    string_value = str(value).strip()
+    if not string_value:
+        return None
+    
+    # Replace hyphens with spaces
+    return string_value.replace('-', ' ')
+
+
+def _normalize_reason_retired_key(value: str) -> str:
+    """Normalize transaction text for reason_retired comparisons."""
+    lowered = value.lower()
+    lowered = lowered.replace('_', ' ')
+    lowered = lowered.replace('-', ' ')
+    cleaned = re.sub(r'[^a-z0-9\s]', ' ', lowered)
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    return cleaned.strip()
+
+
+def _canonical_reason_retired(value: Optional[str]) -> Optional[str]:
+    """Return canonical reason_retired if value matches allowed transaction types."""
+    if not value:
+        return None
+
+    normalized_key = _normalize_reason_retired_key(value)
+    if not normalized_key:
+        return None
+
+    tokens = normalized_key.split()
+
+    for alias, canonical in REASON_RETIRED_ALIAS_MAP.items():
+        alias_tokens = alias.split()
+        if normalized_key == alias:
+            return canonical
+        if normalized_key.startswith(f"{alias} "):
+            return canonical
+        if alias in normalized_key:
+            return canonical
+        if len(alias_tokens) == 1 and alias_tokens[0] in tokens:
+            return canonical
+        if len(alias_tokens) > 1:
+            window = len(alias_tokens)
+            for idx in range(len(tokens) - window + 1):
+                if tokens[idx: idx + window] == alias_tokens:
+                    return canonical
+
+    return None
 
 
 def _collapse_whitespace(value: str) -> str:
@@ -720,6 +790,103 @@ def _bulk_lookup_existing_property_ids(file_numbers: List[Optional[str]]) -> Dic
     return lookup
 
 
+def _lookup_existing_file_number_sources(
+    file_numbers: List[Optional[str]],
+    test_control: str
+) -> Dict[str, List[str]]:
+    control = (test_control or 'PRODUCTION').upper()
+    normalized_unique: List[str] = []
+    for candidate in dict.fromkeys(file_numbers or []):
+        normalized_candidate = _normalize_string(candidate)
+        if not normalized_candidate:
+            continue
+        normalized_unique.append(normalized_candidate.upper())
+
+    if not normalized_unique:
+        return {}
+
+    detected: Dict[str, Set[str]] = {}
+
+    with SessionLocal() as db:
+        for chunk in _chunk_list(normalized_unique, 500):
+            if not chunk:
+                continue
+
+            indexing_rows = (
+                db.query(FileIndexing.file_number)
+                .filter(FileIndexing.file_number.in_(chunk))
+                .filter(FileIndexing.test_control == control)
+                .all()
+            )
+            for (value,) in indexing_rows:
+                normalized_value = (_normalize_string(value) or '').upper()
+                if not normalized_value:
+                    continue
+                detected.setdefault(normalized_value, set()).add('File Indexings')
+
+            cofo_rows = (
+                db.query(CofO.mls_fno)
+                .filter(CofO.mls_fno.in_(chunk))
+                .filter(CofO.test_control == control)
+                .all()
+            )
+            for (value,) in cofo_rows:
+                normalized_value = (_normalize_string(value) or '').upper()
+                if not normalized_value:
+                    continue
+                detected.setdefault(normalized_value, set()).add('CofO staging')
+
+            filenumber_rows = (
+                db.query(FileNumber.mlsf_no)
+                .filter(FileNumber.mlsf_no.in_(chunk))
+                .filter(FileNumber.test_control == control)
+                .all()
+            )
+            for (value,) in filenumber_rows:
+                normalized_value = (_normalize_string(value) or '').upper()
+                if not normalized_value:
+                    continue
+                detected.setdefault(normalized_value, set()).add('File Number staging')
+
+    return {
+        key: sorted(sources)
+        for key, sources in detected.items()
+    }
+
+
+def _filter_existing_file_numbers_for_preview(
+    dataframe: pd.DataFrame,
+    test_control: str
+) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
+    if dataframe.empty or 'file_number' not in dataframe.columns:
+        return dataframe, []
+
+    normalized_numbers: List[Optional[str]] = []
+    for value in dataframe['file_number'].tolist():
+        normalized_numbers.append((_normalize_string(value) or '').upper())
+
+    existing_sources = _lookup_existing_file_number_sources(normalized_numbers, test_control)
+    if not existing_sources:
+        return dataframe, []
+
+    keep_mask: List[bool] = []
+    suppressed: List[Dict[str, Any]] = []
+
+    for original_index, normalized_number in enumerate(normalized_numbers):
+        if normalized_number and normalized_number in existing_sources:
+            suppressed.append({
+                'original_index': original_index,
+                'file_number': dataframe.iloc[original_index]['file_number'],
+                'sources': existing_sources[normalized_number]
+            })
+            keep_mask.append(False)
+        else:
+            keep_mask.append(True)
+
+    filtered_df = dataframe.loc[keep_mask].reset_index(drop=True)
+    return filtered_df, suppressed
+
+
 def _apply_grouping_updates(
     db,
     record: Dict[str, Any],
@@ -1254,6 +1421,42 @@ def _find_existing_property_id(file_number: str) -> Optional[str]:
 # STAGING IMPORT FUNCTIONS (Customer & Entity Staging)
 # ============================================================================
 
+# Heuristic keyword sets for customer classification.
+CORPORATE_TOKEN_KEYWORDS = {
+    'ASSOCIATES', 'AUTO', 'AUTOS', 'AUTOMOBILE', 'AUTOMOBILES', 'BANK', 'BANKS',
+    'BROS', 'BROTHERS', 'CARDS', 'CATERING', 'CHEMICAL', 'CHEMICALS', 'COMPANY',
+    'COMPUTERS', 'CONSTRUCTION', 'CONSTRUCTIONS', 'CONSULT', 'CONSULTANTS',
+    'CONSULTING', 'CORP', 'CORPORATION', 'DEVELOPERS', 'DEVELOPMENT', 'ENTERPRISE',
+    'ENTERPRISES', 'ENTERPRIES', 'ESTATE', 'ESTATES', 'EXPORT', 'EXPORTS', 'FIBER',
+    'FIBRE', 'FIBRES', 'FOUNDATION', 'GLOBAL', 'GROUP', 'GROUPS', 'HOLDING',
+    'HOLDINGS', 'HOSPITAL', 'HOSPITALS', 'IMPORT', 'IMPORTS', 'INDUSTRIAL',
+    'INDUSTRIES', 'INDUSTRY', 'INSURANCE', 'INTERNATIONAL', 'INVESTMENT',
+    'INVESTMENTS', 'INVESTORS', 'LIMITED', 'LOGISTIC', 'LOGISTICS', 'LTD', 'MEDICAL',
+    'MERCHANT', 'MERCHANTS', 'MINING', 'MOTORS', 'MKT', 'NIG', 'NIGERIA', 'OIL',
+    'PETROLEUM', 'PHARMACY', 'PHARMACEUTICAL', 'PHARMACEUTICALS', 'PLC', 'POWER',
+    'PRESS', 'PROPERTIES', 'PROPERTY', 'REALTY', 'RESOURCES', 'SERVICE', 'SERVICES',
+    'SON', 'SONS', 'DAUGHTER', 'DAUGHTERS', 'FAMILY', 'FAMILIES',
+    'STATION', 'STATIONS', 'STEEL', 'TECH', 'TECHNOLOGIES', 'TECHNOLOGY',
+    'TELECOM', 'TELECOMS', 'TRANSPORT', 'TRANSPORTS', 'TRADING', 'TRAVELS',
+    'VENTURE', 'VENTURES', 'WORKS'
+}
+
+CORPORATE_PHRASES = (
+    ' CO.', ' & CO', ' AND CO', ' & SONS', ' AND SONS', ' & BROTHERS',
+    ' AND BROTHERS', ' BROTHERS LTD', ' HOLDINGS LTD', ' GLOBAL LTD',
+    ' GROUP LTD', ' NIG. LTD', ' NIG LTD', ' CAR HIRE', ' CAR SALES',
+    ' AUTO LTD', ' AUTO NIG', ' MOTORS LTD', ' MEDICAL CENTRE', ' MEDICAL CENTER',
+    ' MEDICAL HOSPITAL', ' HOSPITAL LTD', ' INTL LTD', ' INT\'L LTD'
+)
+
+MULTIPLE_TOKEN_KEYWORDS = {'OTHERS', 'ET', 'AL', 'ETAL', 'ET-AL', 'ET.', 'AL.'}
+
+MULTIPLE_PHRASES = (
+    ' AND ', ' WITH ', ' AKA ', ' A/K/A ', ' A.K.A ', ' + ', ' / ',
+    ' AKA', ' OTHERS', ' & OR ', ' AND/OR '
+)
+
+
 def _classify_customer_type(descriptor: Optional[str]) -> str:
     """
     Classify customer/entity type using heuristics on the provided descriptor.
@@ -1271,56 +1474,26 @@ def _classify_customer_type(descriptor: Optional[str]) -> str:
         return 'Individual'
 
     lowered = text.lower()
-    normalized_for_tokens = re.sub(r'[^a-z0-9]+', ' ', lowered)
+    uppercase = text.upper()
+    normalized_tokens = re.findall(r"[A-Z0-9']+", uppercase)
+    token_set = set(normalized_tokens)
 
-    corporate_substrings = (
-        ' limited',
-        ' ltd',
-        ' plc',
-        ' inc',
-        ' corp',
-        ' company',
-        ' co ',
-        ' enterprises',
-        ' enterprise',
-        ' industries',
-        ' industry',
-        ' services',
-        ' ventures',
-        ' trading',
-        ' logistics',
-        ' haulage',
-        ' petroleum',
-        ' engineering',
-        ' hospital',
-        ' clinic',
-        ' foundation',
-        ' holdings',
-        ' resources',
-        ' technologies',
-        ' partners',
-        ' associates',
-        ' investments',
-        ' investment',
-    )
-
-    # Quick substring check using a sanitised version that keeps the original spacing
-    lowered_compact = lowered.replace('.', ' ').replace('&', ' ').replace('/', ' ')
-    lowered_with_padding = f" {re.sub(r'\s+', ' ', lowered_compact)} "
-    for keyword in corporate_substrings:
-        if keyword in lowered_with_padding:
-            return 'Corporate'
-
-    token_set = set(normalized_for_tokens.split())
-    corporate_tokens = {
-        'ltd', 'limited', 'plc', 'inc', 'corp', 'company', 'enterprises', 'enterprise',
-        'group', 'holdings', 'industries', 'industry', 'services', 'ventures', 'logistics',
-        'haulage', 'petroleum', 'engineering', 'hospital', 'clinic', 'foundation',
-        'resources', 'technologies', 'partners', 'associates', 'investments', 'investment',
-        'agency', 'firm', 'consult', 'consulting', 'consultants'
-    }
-    if token_set & corporate_tokens:
+    if any(phrase in uppercase for phrase in CORPORATE_PHRASES):
         return 'Corporate'
+
+    if token_set & CORPORATE_TOKEN_KEYWORDS:
+        return 'Corporate'
+
+    if token_set & MULTIPLE_TOKEN_KEYWORDS:
+        return 'Multiple'
+
+    if '&' in uppercase:
+        if re.search(r'&\s*(SON|SONS|DAUGHTER|DAUGHTERS|BROTHER|BROTHERS|BROS\.?|FAMILY)\b', uppercase):
+            return 'Corporate'
+        return 'Multiple'
+
+    if any(phrase in uppercase for phrase in MULTIPLE_PHRASES):
+        return 'Multiple'
 
     # Detect multiple individual names (comma separated, ampersand, or "and")
     if re.search(r',', text) or re.search(r'\band\b', lowered) or re.search(r'\s&\s', text):
@@ -1661,21 +1834,7 @@ def _process_staging_import(
             
             # Step 4b: Extract reason_retired from transaction_type
             transaction_type = _normalize_string(record.get('transaction_type'))
-            reason_retired = None
-            if transaction_type:
-                # Map transaction types to reason_retired
-                reason_mapping = {
-                    'revoked': 'Revoked',
-                    'assignment': 'Assignment',
-                    'power of attorney': 'Power of Attorney',
-                    'surrender': 'Surrender',
-                    'mortgage': 'Mortgage',
-                }
-                lower_type = transaction_type.lower()
-                for key, value in reason_mapping.items():
-                    if key in lower_type:
-                        reason_retired = value
-                        break
+            reason_retired = _canonical_reason_retired(transaction_type)
             
             # Step 5: Create customer staging record
             customer = CustomerStaging(
@@ -1740,6 +1899,8 @@ __all__ = [
     '_check_year_issue',
     '_check_spacing_issue',
     '_assign_property_ids',
+    '_filter_existing_file_numbers_for_preview',
+    '_lookup_existing_file_number_sources',
     '_get_next_property_id_counter',
     '_find_existing_property_id',
     # Staging functions

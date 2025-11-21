@@ -4,13 +4,15 @@ Clean web application with sidebar navigation
 """
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI, Request, UploadFile, File, HTTPException, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 import pandas as pd
 from app.models.database import CofO, FileNumber, Grouping
+from sqlalchemy import func
 import numbers
 import uuid
 import csv
@@ -32,11 +34,13 @@ from app.services.file_indexing_service import (
     _format_value,
     _has_cofo_payload,
     _normalize_numeric_field,
+    _normalize_old_kn_number,
     _normalize_string,
     _strip_all_whitespace,
     _update_cofo,
     _generate_tracking_id,
     _run_qc_validation,
+    _classify_customer_type,
 )
 from app.services.staging_handler import (
     extract_entity_and_customer_data,
@@ -44,14 +48,33 @@ from app.services.staging_handler import (
     perform_staging_import,
 )
 from app.routers.file_indexing import router as file_indexing_router
+from app.routers.duplicate_qc import router as duplicate_qc_router
+from app.routers.file_number_import import router as file_number_import_router
 
 
 app = FastAPI(title="CSV Importer")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+BASE_DIR = Path(__file__).resolve().parent
+DOCS_DIR = (BASE_DIR / "docs").resolve()
+
 
 app.include_router(file_indexing_router)
+app.include_router(duplicate_qc_router)
+app.include_router(file_number_import_router)
+
+
+# ===== Helper Functions =====
+
+
+def _serve_doc_file(filename: str, media_type: str, download_name: str) -> FileResponse:
+    file_path = (DOCS_DIR / filename).resolve()
+    if DOCS_DIR not in file_path.parents:
+        raise HTTPException(status_code=404, detail="Resource not found")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Resource not found")
+    return FileResponse(file_path, media_type=media_type, filename=download_name)
 
 
 # ========== STAGING TABLE MAPPING ==========
@@ -67,6 +90,30 @@ STAGING_TABLES = {
 async def home(request: Request):
     """Landing page for the CSV Importer UI."""
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/file-number-import", response_class=HTMLResponse)
+async def file_number_import_page(request: Request):
+    """File Number import guide page."""
+    return templates.TemplateResponse("file_number_import.html", {"request": request})
+
+
+@app.get("/file-number-import/guide")
+async def file_number_import_guide():
+    """Serve the File Number import guide markdown file."""
+    return _serve_doc_file("FILE_NUMBER_IMPORT.md", "text/markdown", "FILE_NUMBER_IMPORT.md")
+
+
+@app.get("/file-number-import/mapping")
+async def file_number_import_mapping():
+    """Serve the File Number import mapping markdown file."""
+    return _serve_doc_file("FILE_NUMBER_IMPORT_MAPPING.md", "text/markdown", "FILE_NUMBER_IMPORT_MAPPING.md")
+
+
+@app.get("/file-number-import/sample-csv")
+async def file_number_import_sample_csv():
+    """Serve the sample File Number CSV template."""
+    return _serve_doc_file("filenumbers.csv", "text/csv", "filenumbers.csv")
 
 
 @app.get("/file-indexing", response_class=HTMLResponse)
@@ -351,8 +398,17 @@ def _check_spacing_issue(file_number: str) -> Optional[Dict[str, str]]:
     return {'suggested_fix': candidate}
 
 
+SQL_SERVER_MIN_YEAR = 1753
+SQL_SERVER_MAX_YEAR = 9999
+SQL_DEFAULT_FALLBACK_DATE = '1900-01-01'
+
+
 def _coerce_sql_date(value: Optional[str]) -> Optional[str]:
-    """Normalize incoming date strings to ISO format acceptable by SQL Server."""
+    """Normalize incoming date strings to ISO format acceptable by SQL Server.
+
+    Returns None when the input is missing/blank. For invalid or out-of-range
+    dates, falls back to SQL_DEFAULT_FALLBACK_DATE.
+    """
     normalized = _normalize_string(value)
     if not normalized:
         return None
@@ -363,13 +419,22 @@ def _coerce_sql_date(value: Optional[str]) -> Optional[str]:
         parsed = None
 
     if parsed is not None and not pd.isna(parsed):
-        return parsed.strftime('%Y-%m-%d')
+        try:
+            year = parsed.year
+        except AttributeError:
+            year = parsed.to_pydatetime().year if hasattr(parsed, 'to_pydatetime') else None
+
+        if year is not None and SQL_SERVER_MIN_YEAR <= year <= SQL_SERVER_MAX_YEAR:
+            return parsed.strftime('%Y-%m-%d')
+        return SQL_DEFAULT_FALLBACK_DATE
 
     try:
         parsed_dt = date_parser.parse(normalized, dayfirst=True, fuzzy=True)
-        return parsed_dt.strftime('%Y-%m-%d')
+        if SQL_SERVER_MIN_YEAR <= parsed_dt.year <= SQL_SERVER_MAX_YEAR:
+            return parsed_dt.strftime('%Y-%m-%d')
+        return SQL_DEFAULT_FALLBACK_DATE
     except Exception:
-        return None
+        return SQL_DEFAULT_FALLBACK_DATE
 
 
 def _format_date_for_ui(value: Optional[str]) -> Optional[str]:
@@ -490,7 +555,7 @@ def _apply_ui_date_format_to_session_records(property_records: List[Dict[str, An
     ]
     
     time_fields = [
-        'deeds_time', 'transaction_time'
+        'deeds_time', 'transaction_time', 'reg_time'
     ]
 
     def fmt_date(rec: Dict[str, Any], field: str):
@@ -533,7 +598,7 @@ def _assign_property_ids(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     file_number_prop_cache = {}  # Cache prop_ids assigned in this session
     
     for idx, record in enumerate(records):
-        file_number = record.get('file_number', '').strip()
+        file_number = _normalize_string(record.get('file_number'))
         if not file_number:
             continue
         
@@ -724,6 +789,18 @@ class PRAClearDataRequest(BaseModel):
     mode: str
 
 
+class PRARecordUpdate(BaseModel):
+    record_type: Literal['property_records', 'file_numbers', 'cofo']
+    record_index: int
+    field: str
+    value: Optional[str] = None
+
+
+class PRARecordDelete(BaseModel):
+    record_type: Literal['property_records', 'file_numbers', 'cofo'] = 'property_records'
+    record_index: int
+
+
 # ========== FILE HISTORY HELPER FUNCTIONS ==========
 
 def _parse_file_history_date(value: Any) -> Tuple[Optional[str], Optional[str]]:
@@ -762,12 +839,30 @@ def _parse_file_history_time(value: Any) -> Tuple[Optional[str], Optional[str]]:
         return None, raw
 
 
+def _is_cofo_indicator(value: Optional[str]) -> bool:
+    normalized = _normalize_string(value)
+    if not normalized:
+        return False
+
+    lowered = normalized.lower()
+
+    if 'certificate of occup' in lowered:
+        return True
+
+    if re.search(r"\bc[\W_]*o[\W_]*f[\W_]*o\b", lowered):
+        return True
+
+    return False
+
+
 def _build_file_history_cofo_record(
     *,
     file_number: Optional[str],
     transaction_type: Optional[str],
     assignor: Optional[str],
     assignee: Optional[str],
+    mortgagor: Optional[str],
+    mortgagee: Optional[str],
     instrument_type: Optional[str],
     land_use: Optional[str],
     location: Optional[str],
@@ -791,6 +886,8 @@ def _build_file_history_cofo_record(
         'Grantee': assignee,
         'Assignor': assignor,
         'Assignee': assignee,
+        'Mortgagor': mortgagor,
+        'Mortgagee': mortgagee,
         'grantor_assignor': assignor,
         'grantee_assignee': assignee,
         'land_use': land_use,
@@ -800,6 +897,8 @@ def _build_file_history_cofo_record(
         'transaction_date_raw': transaction_date_raw,
         'transaction_time': transaction_time,
         'transaction_time_raw': transaction_time_raw,
+        'reg_time': transaction_time,
+        'reg_time_raw': transaction_time_raw,
         'serialNo': serial_no,
         'pageNo': page_no,
         'volumeNo': volume_no,
@@ -812,7 +911,10 @@ def _build_file_history_cofo_record(
         'migration_source': 'File History',
         'migrated_by': 'File History Import',
         'prop_id': None,
-        'hasIssues': False
+        'hasIssues': False,
+        'is_cofo_record': True,
+        'skip_import': False,
+        'skip_reason': None
     }
 
 
@@ -835,12 +937,27 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
             or _normalize_string(row.get('instrument_type'))
         )
 
-        transaction_type = (
+        transaction_type_column_value = (
             _normalize_string(row.get('Transaction Type'))
             or _normalize_string(row.get('TransactionType'))
             or _normalize_string(row.get('transaction_type'))
-            or instrument_type_value
         )
+
+        transaction_type = transaction_type_column_value or instrument_type_value
+
+        record_type = (
+            _normalize_string(row.get('Record Type'))
+            or _normalize_string(row.get('RecordType'))
+            or _normalize_string(row.get('record_type'))
+        )
+
+        title_type = (
+            _normalize_string(row.get('Title Type'))
+            or _normalize_string(row.get('TitleType'))
+            or _normalize_string(row.get('title_type'))
+        )
+
+        is_cofo_record = _is_cofo_indicator(transaction_type_column_value)
 
         assignor = (
             _normalize_string(row.get('Original Holder (Assignor)'))
@@ -856,6 +973,32 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
             or _normalize_string(row.get('Assignee (Current Holder)'))
             or _normalize_string(row.get('Current Holder'))
         )
+
+        mortgagor = (
+            _normalize_string(row.get('Mortgagor'))
+            or _normalize_string(row.get('Mortgagor Name'))
+            or _normalize_string(row.get('MortgagorName'))
+            or _normalize_string(row.get('Mortgagor/Assignor'))
+        )
+
+        mortgagee = (
+            _normalize_string(row.get('Mortgagee'))
+            or _normalize_string(row.get('Mortgagee Name'))
+            or _normalize_string(row.get('MortgageeName'))
+            or _normalize_string(row.get('Mortgagee/Assignee'))
+        )
+
+        is_mortgage_transaction = False
+        for value in (instrument_type_value, transaction_type):
+            if value and 'MORTGAGE' in value.upper():
+                is_mortgage_transaction = True
+                break
+
+        if is_mortgage_transaction:
+            if not mortgagor and assignee:
+                mortgagor = assignee
+            if not mortgagee and assignor:
+                mortgagee = assignor
         land_use = _normalize_string(row.get('Landuse'))
         location = _normalize_string(row.get('Location'))
 
@@ -865,6 +1008,41 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
         volume_no = _normalize_numeric_field(row.get('Vol No'))
         reg_time, reg_time_raw = _parse_file_history_time(row.get('Reg Time'))
         reg_date, reg_date_raw = _parse_file_history_date(row.get('Reg Date'))
+
+        # Some extracts provide a combined "Reg Date Reg Time" column; split into discrete values.
+        combined_reg_datetime = _normalize_string(row.get('Reg Date Reg Time'))
+        if combined_reg_datetime and (not reg_date or not reg_time):
+            parsed_combined = None
+            try:
+                parsed_combined = pd.to_datetime(combined_reg_datetime, dayfirst=True, errors='coerce')
+            except Exception:
+                parsed_combined = None
+
+            if parsed_combined is not None and not pd.isna(parsed_combined):
+                if not reg_date:
+                    reg_date = parsed_combined.strftime('%Y-%m-%d')
+                if not reg_date_raw:
+                    reg_date_raw = combined_reg_datetime
+                if not reg_time:
+                    reg_time = parsed_combined.strftime('%H:%M')
+                if not reg_time_raw:
+                    reg_time_raw = combined_reg_datetime
+            else:
+                try:
+                    parsed_dt = date_parser.parse(combined_reg_datetime, dayfirst=True, fuzzy=True)
+                except Exception:
+                    parsed_dt = None
+
+                if parsed_dt is not None:
+                    if not reg_date:
+                        reg_date = parsed_dt.strftime('%Y-%m-%d')
+                    if not reg_date_raw:
+                        reg_date_raw = combined_reg_datetime
+                    if not reg_time:
+                        reg_time = parsed_dt.strftime('%H:%M')
+                    if not reg_time_raw:
+                        reg_time_raw = combined_reg_datetime
+
         created_by = _normalize_string(row.get('CreatedBy')) or 'System'
         related_file_number = _normalize_string(row.get('Related File Number'))
 
@@ -882,12 +1060,16 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
             'volumeNo': volume_no,
             'regNo': reg_no,
             'instrument_type': instrument_type_value or transaction_type,
+            'record_type': record_type,
+            'title_type': title_type,
             'Grantor': assignor,
             'Assignor': assignor,
             'grantor_assignor': assignor,
             'Grantee': assignee,
             'Assignee': assignee,
             'grantee_assignee': assignee,
+            'Mortgagor': mortgagor,
+            'Mortgagee': mortgagee,
             'property_description': location,
             'location': location,
             'streetName': None,
@@ -912,31 +1094,51 @@ def _process_file_history_data(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], 
             'reg_time_raw': reg_time_raw,
             'related_file_number': related_file_number,
             'created_at_display': reg_date or reg_date_raw,
-            'hasIssues': False
+            'hasIssues': False,
+            'is_cofo_record': is_cofo_record
         }
 
         property_records.append(property_record)
 
-        cofo_record = _build_file_history_cofo_record(
-            file_number=file_number,
-            transaction_type=transaction_type,
-            assignor=assignor,
-            assignee=assignee,
-            instrument_type=instrument_type_value,
-            land_use=land_use,
-            location=location,
-            transaction_date=transaction_date,
-            transaction_date_raw=transaction_date_raw,
-            transaction_time=reg_time,
-            transaction_time_raw=reg_time_raw,
-            serial_no=serial_no,
-            page_no=page_no,
-            volume_no=volume_no,
-            reg_no=reg_no,
-            created_by=created_by,
-            reg_date=reg_date,
-            reg_date_raw=reg_date_raw
-        )
+        if is_cofo_record:
+            cofo_record = _build_file_history_cofo_record(
+                file_number=file_number,
+                transaction_type=transaction_type,
+                assignor=assignor,
+                assignee=assignee,
+                mortgagor=mortgagor,
+                mortgagee=mortgagee,
+                instrument_type=instrument_type_value,
+                land_use=land_use,
+                location=location,
+                transaction_date=transaction_date,
+                transaction_date_raw=transaction_date_raw,
+                transaction_time=reg_time,
+                transaction_time_raw=reg_time_raw,
+                serial_no=serial_no,
+                page_no=page_no,
+                volume_no=volume_no,
+                reg_no=reg_no,
+                created_by=created_by,
+                reg_date=reg_date,
+                reg_date_raw=reg_date_raw
+            )
+        else:
+            cofo_record = {
+                'mlsFNo': file_number,
+                'transaction_type': transaction_type,
+                'instrument_type': instrument_type_value or transaction_type,
+                'Grantor': assignor,
+                'Grantee': assignee,
+                'Assignor': assignor,
+                'Assignee': assignee,
+                'prop_id': None,
+                'test_control': None,
+                'hasIssues': False,
+                'is_cofo_record': False,
+                'skip_import': True,
+                'skip_reason': 'Transaction Type is not CofO'
+            }
 
         cofo_records.append(cofo_record)
 
@@ -1057,6 +1259,18 @@ def _set_property_record_field(
             cofo_record['grantee_assignee'] = normalized
         return
 
+    if field == 'Mortgagor':
+        record['Mortgagor'] = normalized
+        if cofo_record is not None:
+            cofo_record['Mortgagor'] = normalized
+        return
+
+    if field == 'Mortgagee':
+        record['Mortgagee'] = normalized
+        if cofo_record is not None:
+            cofo_record['Mortgagee'] = normalized
+        return
+
     if field == 'mlsFNo':
         record['mlsFNo'] = normalized
         record['fileno'] = normalized
@@ -1110,6 +1324,14 @@ def _set_property_record_field(
             cofo_record['reg_date'] = normalized
             cofo_record['reg_date_raw'] = normalized
             cofo_record['cofo_date'] = normalized
+    elif field == 'reg_time':
+        record['reg_time'] = normalized
+        record['reg_time_raw'] = normalized
+        if cofo_record is not None:
+            cofo_record['transaction_time'] = normalized
+            cofo_record['transaction_time_raw'] = normalized
+            cofo_record['reg_time'] = normalized
+            cofo_record['reg_time_raw'] = normalized
     elif field == 'created_by':
         record['created_by'] = normalized
         record['CreatedBy'] = normalized
@@ -1145,6 +1367,18 @@ def _set_cofo_record_field(
             property_record['grantee_assignee'] = normalized
         return
 
+    if field == 'Mortgagor':
+        cofo_record['Mortgagor'] = normalized
+        if property_record is not None:
+            property_record['Mortgagor'] = normalized
+        return
+
+    if field == 'Mortgagee':
+        cofo_record['Mortgagee'] = normalized
+        if property_record is not None:
+            property_record['Mortgagee'] = normalized
+        return
+
     if field == 'mlsFNo':
         cofo_record['mlsFNo'] = normalized
         if property_record is not None:
@@ -1166,6 +1400,11 @@ def _set_cofo_record_field(
     elif field == 'transaction_time':
         cofo_record['transaction_time'] = normalized
         cofo_record['transaction_time_raw'] = normalized
+        cofo_record['reg_time'] = normalized
+        cofo_record['reg_time_raw'] = normalized
+        if property_record is not None:
+            property_record['reg_time'] = normalized
+            property_record['reg_time_raw'] = normalized
     elif field == 'serialNo':
         cofo_record['serialNo'] = normalized
         if property_record is not None:
@@ -1227,7 +1466,14 @@ def _refresh_file_history_session_state(session_data: Dict[str, Any]) -> Dict[st
     for idx, record in enumerate(property_records):
         has_issue = record.get('hasIssues', False)
         if idx < len(cofo_records):
-            cofo_records[idx]['hasIssues'] = has_issue
+            cofo_entry = cofo_records[idx]
+            if cofo_entry and cofo_entry.get('is_cofo_record'):
+                cofo_entry['hasIssues'] = has_issue
+            elif cofo_entry:
+                cofo_entry['hasIssues'] = False
+                cofo_entry['skip_import'] = True
+                if not cofo_entry.get('skip_reason'):
+                    cofo_entry['skip_reason'] = 'Transaction Type is not CofO'
 
     session_data['property_records'] = property_records
     session_data['cofo_records'] = cofo_records
@@ -1304,7 +1550,9 @@ async def upload_file_history(test_control: str = Form(...), file: UploadFile = 
             if 0 <= idx < len(property_records):
                 property_records[idx]['prop_id'] = prop_id
             if 0 <= idx < len(cofo_records):
-                cofo_records[idx]['prop_id'] = prop_id
+                cofo_entry = cofo_records[idx]
+                if cofo_entry and cofo_entry.get('is_cofo_record'):
+                    cofo_entry['prop_id'] = prop_id
 
         qc_issues = _run_file_history_qc_validation(property_records)
         duplicates = {"csv": [], "database": []}
@@ -1312,7 +1560,9 @@ async def upload_file_history(test_control: str = Form(...), file: UploadFile = 
         for idx, record in enumerate(property_records):
             has_issues = record.get('hasIssues', False)
             if 0 <= idx < len(cofo_records):
-                cofo_records[idx]['hasIssues'] = has_issues
+                cofo_entry = cofo_records[idx]
+                if cofo_entry and cofo_entry.get('is_cofo_record'):
+                    cofo_entry['hasIssues'] = has_issues
 
         total_records = len(property_records)
         duplicate_count = 0
@@ -1521,6 +1771,10 @@ async def import_file_history(session_id: str):
         for record in session_data['cofo_records']:
             if record.get('hasIssues'):
                 continue
+            if not record.get('is_cofo_record'):
+                continue
+            if record.get('skip_import'):
+                continue
 
             cofo_entry = CofO(
                 mls_fno=record.get('mlsFNo'),
@@ -1561,7 +1815,9 @@ async def import_file_history(session_id: str):
             session_data.get('filename', 'file_history_upload.csv'),
             session_data.get('test_control', 'PRODUCTION'),
             'transaction_type',
-            source='file_history'
+            source='file_history',
+            precomputed_entities=session_data.get('entity_staging_records'),
+            precomputed_customers=session_data.get('customer_staging_records')
         )
 
         db.commit()
@@ -1669,6 +1925,24 @@ async def upload_pic(test_control: str = Form(...), file: UploadFile = File(...)
         if not property_records:
             raise HTTPException(status_code=400, detail="No valid PIC records found in the uploaded file")
 
+        # Extract staging data (entities and customers with reason_retired)
+        entity_records, customer_records, staging_summary = extract_entity_and_customer_data(
+            property_records,
+            file.filename,
+            mode,
+            transaction_type_field='transaction_type',
+            source='pic'
+        )
+
+        # Apply PIC-specific deduplication rules (before property ID assignment)
+        # Property Records: kept all, CofO/File Numbers/Entities: deduplicated, Customers: kept all
+        property_records, cofo_records, file_number_records, entity_records = _deduplicate_pic_records(
+            property_records,
+            cofo_records,
+            file_number_records,
+            entity_records
+        )
+
         assignments = _assign_property_ids(property_records)
         for assignment in assignments:
             idx = assignment['record_index']
@@ -1689,8 +1963,11 @@ async def upload_pic(test_control: str = Form(...), file: UploadFile = File(...)
             if idx < len(cofo_records):
                 cofo_records[idx]['hasIssues'] = has_issues
                 cofo_records[idx]['oldKNNo'] = record.get('oldKNNo')
-            if idx < len(file_number_records):
-                file_number_records[idx]['hasIssues'] = has_issues
+
+        for entry in file_number_records:
+            source_index = entry.get('property_index')
+            if isinstance(source_index, int) and 0 <= source_index < len(property_records):
+                entry['hasIssues'] = property_records[source_index].get('hasIssues', False)
 
         total_records = len(property_records)
         validation_issues = sum(len(items) for items in qc_issues.values())
@@ -1701,15 +1978,6 @@ async def upload_pic(test_control: str = Form(...), file: UploadFile = File(...)
 
         # Format dates for UI preview
         _apply_ui_date_format_to_session_records(property_records, cofo_records, file_number_records)
-
-        # Extract staging data (entities and customers with reason_retired)
-        entity_records, customer_records, staging_summary = extract_entity_and_customer_data(
-            property_records,
-            file.filename,
-            mode,
-            transaction_type_field='transaction_type',
-            source='pic'
-        )
 
         app.sessions[session_id] = {
             "filename": file.filename,
@@ -1842,11 +2110,12 @@ async def clear_pic_data(request: PICClearDataRequest):
             {"mode": mode}
         )
         cofo_deleted = db.query(CofO).filter(CofO.test_control == mode).delete(synchronize_session=False)
+        file_number_deleted = db.query(FileNumber).filter(FileNumber.test_control == mode).delete(synchronize_session=False)
 
         counts = {
             "pic": property_result.rowcount if property_result is not None else 0,
             "CofO_staging": cofo_deleted,
-            "fileNumber": 0
+            "fileNumber": file_number_deleted
         }
         db.commit()
         return {
@@ -1879,7 +2148,14 @@ async def import_pic(session_id: str):
     test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
 
     try:
-        for record in session_data.get('property_records', []):
+        property_records = session_data.get('property_records', [])
+        cofo_records = session_data.get('cofo_records', [])
+        file_number_records = session_data.get('file_number_records', [])
+
+        _synchronize_pic_cofo_visibility(property_records, cofo_records)
+        file_number_records = _deduplicate_pic_file_numbers(file_number_records)
+
+        for record in property_records:
             if record.get('hasIssues'):
                 continue
 
@@ -1917,12 +2193,29 @@ async def import_pic(session_id: str):
             _import_property_record(db, payload, now, staging_table='pic')
             property_records_count += 1
 
-        for record in session_data.get('cofo_records', []):
+        skipped_invalid_cofo = 0
+        skipped_duplicate_cofo: List[str] = []
+
+        for record in cofo_records:
             if record.get('hasIssues'):
                 continue
 
+            if record.get('skip_cofo_preview'):
+                skipped_invalid_cofo += 1
+                continue
+
+            file_number = _normalize_string(record.get('mlsFNo'))
+            if not file_number:
+                skipped_invalid_cofo += 1
+                continue
+
+            if _pic_cofo_exists(db, file_number):
+                if file_number not in skipped_duplicate_cofo:
+                    skipped_duplicate_cofo.append(file_number)
+                continue
+
             cofo_entry = CofO(
-                mls_fno=record.get('mlsFNo'),
+                mls_fno=file_number,
                 title_type='Property Index Card',
                 transaction_type=record.get('transaction_type'),
                 instrument_type=record.get('instrument_type'),
@@ -1945,23 +2238,35 @@ async def import_pic(session_id: str):
                 test_control=test_control
             )
 
-            existing = db.query(CofO).filter(CofO.mls_fno == cofo_entry.mls_fno).first()
-            if existing:
-                _update_cofo(existing, cofo_entry)
-                existing.test_control = test_control
-            else:
-                db.add(cofo_entry)
+            db.add(cofo_entry)
 
             cofo_records_count += 1
+
+        file_number_upserts = 0
+        skipped_duplicate_file_numbers: List[str] = []
+        for record in file_number_records:
+            if record.get('hasIssues'):
+                continue
+            file_number_value = _normalize_string(record.get('mlsfNo') or record.get('mlsFNo'))
+            if not file_number_value:
+                continue
+            if _pic_file_number_exists(db, file_number_value):
+                if file_number_value not in skipped_duplicate_file_numbers:
+                    skipped_duplicate_file_numbers.append(file_number_value)
+                continue
+            if _import_pic_file_number_record(db, record, now, test_control):
+                file_number_upserts += 1
 
         # Import staging data (entities and customers with reason_retired)
         staging_result = perform_staging_import(
             db,
-            session_data.get('property_records', []),
+            property_records,
             session_data.get('filename', 'pic_upload.csv'),
             test_control,
             'transaction_type',
-            source='pic'
+            source='pra',
+            precomputed_entities=session_data.get('entity_staging_records'),
+            precomputed_customers=session_data.get('customer_staging_records')
         )
 
         db.commit()
@@ -1973,6 +2278,10 @@ async def import_pic(session_id: str):
             "imported_count": property_records_count + cofo_records_count,
             "property_records_count": property_records_count,
             "cofo_records_count": cofo_records_count,
+            "file_number_records_count": file_number_upserts,
+            "cofo_skipped_invalid_transaction": skipped_invalid_cofo,
+            "cofo_skipped_duplicates": skipped_duplicate_cofo,
+            "file_number_skipped_duplicates": skipped_duplicate_file_numbers,
             "staging_import": {
                 "entity_summary": staging_result.get('entity_summary', {}),
                 "customer_summary": staging_result.get('customer_summary', {}),
@@ -1991,14 +2300,15 @@ async def import_pic(session_id: str):
 # ========== PRA HELPER FUNCTIONS ==========
 
 def _process_pra_data(df):
-    """Process PRA CSV data and split into property_records and file_numbers data"""
+    """Process PRA CSV data and split into property_records, CofO, and file_numbers data."""
     
     # Normalize column names to handle variations
     df.columns = df.columns.str.strip()
     
     # Create property_records data
-    property_records = []
-    file_numbers = []
+    property_records: List[Dict[str, Any]] = []
+    cofo_records: List[Dict[str, Any]] = []
+    file_numbers: List[Dict[str, Any]] = []
     
     for index, row in df.iterrows():
         # Generate tracking ID
@@ -2007,6 +2317,7 @@ def _process_pra_data(df):
         # Normalize frequently used fields once
         mls_f_no = _normalize_string(row.get('mlsFNo'))
         transaction_type = _normalize_string(row.get('transaction_type'))
+        is_cofo_record = _is_cofo_indicator(transaction_type)
         transaction_date_raw = row.get('transaction_date')
         transaction_date = _coerce_sql_date(transaction_date_raw) or _normalize_string(transaction_date_raw)
         serial_no = _normalize_numeric_field(row.get('SerialNo'))
@@ -2056,7 +2367,8 @@ def _process_pra_data(df):
             'date_created': date_created,
             'DateCreated': date_created,
             'migration_source': 'PRA',
-            'hasIssues': False  # Will be set by QC validation
+            'hasIssues': False,  # Will be set by QC validation
+            'is_cofo_record': bool(is_cofo_record)
         }
 
         # Build file number record
@@ -2075,8 +2387,9 @@ def _process_pra_data(df):
         
         property_records.append(property_record)
         file_numbers.append(file_number_record)
+        cofo_records.append(_build_pra_cofo_record(property_record, is_cofo_record=is_cofo_record))
     
-    return property_records, file_numbers
+    return property_records, cofo_records, file_numbers
 
 
 def _build_pra_reg_no(serial, page, volume):
@@ -2206,6 +2519,351 @@ def _detect_pra_duplicates(records):
     return duplicates
 
 
+def _detect_cofo_duplicates(cofo_records: List[Dict[str, Any]], test_control: Optional[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Identify CofO duplicates within the upload and against the CofO staging table."""
+    duplicates: Dict[str, List[Dict[str, Any]]] = {
+        'csv': [],
+        'database': []
+    }
+
+    if not cofo_records:
+        return duplicates
+
+    normalized_mode = (test_control or '').strip().upper() or 'PRODUCTION'
+    csv_bucket: Dict[str, List[Dict[str, Any]]] = {}
+
+    for index, record in enumerate(cofo_records):
+        if not record.get('is_cofo_record'):
+            continue
+        file_number = _normalize_string(record.get('mlsFNo'))
+        if not file_number:
+            continue
+        csv_bucket.setdefault(file_number, []).append({
+            'record_index': index,
+            'mlsFNo': file_number,
+            'Grantor': record.get('Grantor'),
+            'Grantee': record.get('Grantee'),
+            'transaction_type': record.get('transaction_type'),
+            'source': 'upload'
+        })
+
+    for file_number, occurrences in csv_bucket.items():
+        if len(occurrences) > 1:
+            duplicates['csv'].append({
+                'file_number': file_number,
+                'count': len(occurrences),
+                'records': occurrences
+            })
+
+    db = SessionLocal()
+    try:
+        if csv_bucket:
+            existing_rows = (
+                db.query(CofO)
+                .filter(CofO.mls_fno.in_(list(csv_bucket.keys())))
+                .filter(CofO.test_control == normalized_mode)
+                .all()
+            )
+            if existing_rows:
+                for existing in existing_rows:
+                    duplicates['database'].append({
+                        'file_number': existing.mls_fno,
+                        'count': 1,
+                        'records': [{
+                            'mlsFNo': existing.mls_fno,
+                            'transaction_type': existing.transaction_type,
+                            'Grantor': existing.grantor,
+                            'Grantee': existing.grantee,
+                            'cofo_date': existing.cofo_date,
+                            'source': 'CofO'
+                        }]
+                    })
+    except Exception:
+        pass
+    finally:
+        db.close()
+
+    return duplicates
+
+
+def _apply_pra_field_update(
+    property_records: List[Dict[str, Any]],
+    cofo_records: List[Dict[str, Any]],
+    file_numbers: List[Dict[str, Any]],
+    record_type: Literal['property_records', 'file_numbers', 'cofo'],
+    index: int,
+    field: str,
+    value: Optional[str]
+) -> None:
+    if index < 0:
+        return
+
+    sanitized = value.strip() if isinstance(value, str) else value
+
+    def update_if_present(record: Optional[Dict[str, Any]], key: str, new_value: Any) -> None:
+        if record is not None and key is not None:
+            record[key] = new_value
+
+    property_record = property_records[index] if 0 <= index < len(property_records) else None
+    cofo_record = cofo_records[index] if 0 <= index < len(cofo_records) else None
+    file_number_record = file_numbers[index] if 0 <= index < len(file_numbers) else None
+
+    if record_type == 'property_records':
+        if property_record is None:
+            return
+
+        update_if_present(property_record, field, sanitized)
+
+        if field in {'mlsFNo', 'fileno'}:
+            update_if_present(property_record, 'mlsFNo', sanitized)
+            update_if_present(property_record, 'fileno', sanitized)
+            update_if_present(file_number_record, 'mlsfNo', sanitized)
+            update_if_present(cofo_record, 'mlsFNo', sanitized)
+        elif field == 'transaction_type':
+            update_if_present(property_record, 'transaction_type', sanitized)
+            update_if_present(property_record, 'instrument_type', sanitized)
+            update_if_present(file_number_record, 'type', sanitized)
+            if cofo_record is not None:
+                update_if_present(cofo_record, 'transaction_type', sanitized)
+                update_if_present(cofo_record, 'instrument_type', sanitized)
+                is_cofo = _is_cofo_indicator(sanitized)
+                update_if_present(property_record, 'is_cofo_record', is_cofo)
+                update_if_present(cofo_record, 'is_cofo_record', is_cofo)
+        elif field == 'transaction_date':
+            update_if_present(property_record, 'transaction_date', sanitized)
+            update_if_present(property_record, 'transaction_date_raw', sanitized)
+            update_if_present(cofo_record, 'transaction_date', sanitized)
+            update_if_present(cofo_record, 'transaction_date_raw', sanitized)
+        elif field == 'serialNo':
+            update_if_present(property_record, 'serialNo', sanitized)
+            update_if_present(property_record, 'SerialNo', sanitized)
+            update_if_present(cofo_record, 'serialNo', sanitized)
+        elif field == 'pageNo':
+            update_if_present(property_record, 'pageNo', sanitized)
+            update_if_present(cofo_record, 'pageNo', sanitized)
+        elif field == 'volumeNo':
+            update_if_present(property_record, 'volumeNo', sanitized)
+            update_if_present(cofo_record, 'volumeNo', sanitized)
+        elif field == 'regNo':
+            update_if_present(property_record, 'regNo', sanitized)
+            update_if_present(cofo_record, 'regNo', sanitized)
+        elif field in {'grantor_assignor', 'Grantor'}:
+            update_if_present(property_record, 'grantor_assignor', sanitized)
+            update_if_present(property_record, 'Grantor', sanitized)
+            update_if_present(cofo_record, 'Grantor', sanitized)
+            update_if_present(cofo_record, 'Assignor', sanitized)
+        elif field in {'grantee_assignee', 'Grantee', 'Assignee'}:
+            update_if_present(property_record, 'grantee_assignee', sanitized)
+            update_if_present(property_record, 'Grantee', sanitized)
+            update_if_present(property_record, 'Assignee', sanitized)
+            update_if_present(cofo_record, 'Grantee', sanitized)
+            update_if_present(cofo_record, 'Assignee', sanitized)
+            update_if_present(file_number_record, 'FileName', sanitized)
+        elif field == 'location':
+            update_if_present(property_record, 'location', sanitized)
+            update_if_present(property_record, 'property_description', sanitized)
+            update_if_present(file_number_record, 'location', sanitized)
+            update_if_present(cofo_record, 'location', sanitized)
+            update_if_present(cofo_record, 'property_description', sanitized)
+        elif field == 'plot_no':
+            update_if_present(property_record, 'plot_no', sanitized)
+            update_if_present(file_number_record, 'plot_no', sanitized)
+        elif field in {'CreatedBy', 'created_by'}:
+            update_if_present(property_record, 'CreatedBy', sanitized)
+            update_if_present(property_record, 'created_by', sanitized)
+            update_if_present(file_number_record, 'created_by', sanitized)
+            update_if_present(cofo_record, 'created_by', sanitized)
+    elif record_type == 'file_numbers':
+        if file_number_record is None:
+            return
+
+        update_if_present(file_number_record, field, sanitized)
+
+        if field == 'mlsfNo':
+            update_if_present(file_number_record, 'mlsfNo', sanitized)
+            update_if_present(property_record, 'mlsFNo', sanitized)
+            update_if_present(property_record, 'fileno', sanitized)
+            update_if_present(cofo_record, 'mlsFNo', sanitized)
+        elif field == 'FileName':
+            update_if_present(file_number_record, 'FileName', sanitized)
+            update_if_present(property_record, 'Grantee', sanitized)
+            update_if_present(property_record, 'grantee_assignee', sanitized)
+            update_if_present(property_record, 'Assignee', sanitized)
+            update_if_present(cofo_record, 'Grantee', sanitized)
+            update_if_present(cofo_record, 'Assignee', sanitized)
+        elif field == 'plot_no':
+            update_if_present(file_number_record, 'plot_no', sanitized)
+            update_if_present(property_record, 'plot_no', sanitized)
+        elif field == 'location':
+            update_if_present(file_number_record, 'location', sanitized)
+            update_if_present(property_record, 'location', sanitized)
+            update_if_present(property_record, 'property_description', sanitized)
+            update_if_present(cofo_record, 'location', sanitized)
+            update_if_present(cofo_record, 'property_description', sanitized)
+    elif record_type == 'cofo':
+        if cofo_record is None:
+            return
+
+        update_if_present(cofo_record, field, sanitized)
+
+        if field == 'mlsFNo':
+            update_if_present(cofo_record, 'mlsFNo', sanitized)
+            update_if_present(property_record, 'mlsFNo', sanitized)
+            update_if_present(property_record, 'fileno', sanitized)
+            update_if_present(file_number_record, 'mlsfNo', sanitized)
+        elif field == 'transaction_type':
+            update_if_present(cofo_record, 'transaction_type', sanitized)
+            update_if_present(property_record, 'transaction_type', sanitized)
+            update_if_present(property_record, 'instrument_type', sanitized)
+            update_if_present(file_number_record, 'type', sanitized)
+            is_cofo = _is_cofo_indicator(sanitized)
+            update_if_present(property_record, 'is_cofo_record', is_cofo)
+            update_if_present(cofo_record, 'is_cofo_record', is_cofo)
+        elif field in {'Grantor', 'Assignor'}:
+            update_if_present(cofo_record, 'Grantor', sanitized)
+            update_if_present(cofo_record, 'Assignor', sanitized)
+            update_if_present(property_record, 'grantor_assignor', sanitized)
+            update_if_present(property_record, 'Grantor', sanitized)
+            update_if_present(property_record, 'Assignor', sanitized)
+            _annotate_pic_party_types(property_record)
+            update_if_present(cofo_record, 'grantor_type', property_record.get('grantor_type'))
+            update_if_present(cofo_record, 'assignor_type', property_record.get('assignor_type'))
+        elif field in {'Grantee', 'Assignee'}:
+            update_if_present(cofo_record, 'Grantee', sanitized)
+            update_if_present(cofo_record, 'Assignee', sanitized)
+            update_if_present(property_record, 'grantee_assignee', sanitized)
+            update_if_present(property_record, 'Grantee', sanitized)
+            update_if_present(property_record, 'Assignee', sanitized)
+            update_if_present(file_number_record, 'FileName', sanitized)
+            _annotate_pic_party_types(property_record)
+            update_if_present(cofo_record, 'grantee_type', property_record.get('grantee_type'))
+            update_if_present(cofo_record, 'assignee_type', property_record.get('assignee_type'))
+        elif field == 'transaction_date':
+            update_if_present(cofo_record, 'transaction_date', sanitized)
+            update_if_present(cofo_record, 'transaction_date_raw', sanitized)
+            update_if_present(property_record, 'transaction_date', sanitized)
+            update_if_present(property_record, 'transaction_date_raw', sanitized)
+        elif field == 'serialNo':
+            update_if_present(cofo_record, 'serialNo', sanitized)
+            update_if_present(property_record, 'serialNo', sanitized)
+            update_if_present(property_record, 'SerialNo', sanitized)
+        elif field == 'pageNo':
+            update_if_present(cofo_record, 'pageNo', sanitized)
+            update_if_present(property_record, 'pageNo', sanitized)
+        elif field == 'volumeNo':
+            update_if_present(cofo_record, 'volumeNo', sanitized)
+            update_if_present(property_record, 'volumeNo', sanitized)
+        elif field == 'regNo':
+            update_if_present(cofo_record, 'regNo', sanitized)
+            update_if_present(property_record, 'regNo', sanitized)
+
+
+def _refresh_pra_session_state(session_data: Dict[str, Any]) -> Dict[str, Any]:
+    property_records = session_data.get('property_records', [])
+    cofo_records = session_data.get('cofo_records', [])
+    file_numbers = session_data.get('file_numbers', [])
+    mode = session_data.get('test_control')
+
+    _apply_ui_date_format_to_session_records(property_records, cofo_records, file_numbers)
+
+    for record in property_records:
+        record['hasIssues'] = False
+    for record in cofo_records:
+        record['hasIssues'] = False
+
+    qc_issues_raw, qc_rows = _build_pra_file_number_qc(file_numbers)
+
+    for issue_group in qc_issues_raw.values():
+        for issue in issue_group:
+            idx = issue.get('record_index')
+            if idx is None:
+                continue
+            if 0 <= idx < len(property_records):
+                property_records[idx]['hasIssues'] = True
+            if 0 <= idx < len(cofo_records):
+                cofo_records[idx]['hasIssues'] = True
+
+    duplicates_property = _detect_pra_duplicates(property_records)
+    file_number_probe = [
+        {
+            'mlsFNo': record.get('mlsfNo'),
+            'Grantee': record.get('FileName'),
+            'transaction_type': record.get('type'),
+            'plot_no': record.get('plot_no')
+        }
+        for record in file_numbers
+    ]
+    duplicates_file = _detect_pra_duplicates(file_number_probe)
+    cofo_duplicates = _detect_cofo_duplicates(cofo_records, mode)
+
+    existing_cofo_numbers = {entry['file_number'] for entry in cofo_duplicates.get('database', [])}
+    for record in cofo_records:
+        file_number = _normalize_string(record.get('mlsFNo'))
+        if not record.get('is_cofo_record'):
+            record['skip_import'] = True
+            record['duplicate_in_cofo'] = False
+            record['duplicate_reason'] = 'Not a CofO record'
+            continue
+        if file_number and file_number in existing_cofo_numbers:
+            record['duplicate_in_cofo'] = True
+            record['skip_import'] = True
+            record['duplicate_reason'] = 'Existing CofO record'
+            record['hasIssues'] = True
+        else:
+            record['duplicate_in_cofo'] = False
+            record['duplicate_reason'] = None
+            record['skip_import'] = False
+
+    total_records = len(property_records)
+    ready_records = sum(1 for rec in property_records if not rec.get('hasIssues'))
+    validation_issues = len(qc_rows)
+    duplicate_count = (
+        len(duplicates_property.get('csv', [])) +
+        len(duplicates_property.get('database', [])) +
+        len(duplicates_file.get('csv', [])) +
+        len(duplicates_file.get('database', [])) +
+        len(cofo_duplicates.get('csv', [])) +
+        len(cofo_duplicates.get('database', []))
+    )
+
+    qc_summary = {
+        'total_issues': validation_issues,
+        'padding_issues': len(qc_issues_raw.get('padding', [])),
+        'year_issues': len(qc_issues_raw.get('year', [])),
+        'spacing_issues': len(qc_issues_raw.get('spacing', []))
+    }
+
+    session_data['property_records'] = property_records
+    session_data['cofo_records'] = cofo_records
+    session_data['file_numbers'] = file_numbers
+    session_data['duplicates'] = {
+        'property_records': duplicates_property,
+        'file_numbers': duplicates_file
+    }
+    session_data['cofo_duplicates'] = cofo_duplicates
+    session_data['file_number_qc'] = qc_rows
+    session_data['qc_summary'] = qc_summary
+    session_data['qc_issues_raw'] = qc_issues_raw
+
+    return {
+        'property_records': property_records,
+        'cofo_records': cofo_records,
+        'file_numbers': file_numbers,
+        'issues': qc_issues_raw,
+        'file_number_qc': qc_rows,
+        'duplicates': session_data['duplicates'],
+        'cofo_duplicates': cofo_duplicates,
+        'cofo_duplicates_ignored': cofo_duplicates.get('database', []),
+        'total_records': total_records,
+        'duplicate_count': duplicate_count,
+        'validation_issues': validation_issues,
+        'ready_records': ready_records,
+        'qc_summary': qc_summary,
+        'staging_summary': session_data.get('staging_summary'),
+        'test_control': mode
+    }
+
+
 def _import_property_record(db, record, timestamp, *, allow_update: bool = True, staging_table: str = 'property_records'):
     """Import a single property record to the specified staging table."""
     from sqlalchemy import text
@@ -2227,14 +2885,11 @@ def _import_property_record(db, record, timestamp, *, allow_update: bool = True,
         if isinstance(created_at_override, datetime):
             created_at_value = created_at_override
         else:
-            try:
-                created_at_value = datetime.fromisoformat(created_at_override)
-            except ValueError:
+            coerced_date = _coerce_sql_date(created_at_override)
+            if coerced_date:
                 try:
-                    parsed = pd.to_datetime(created_at_override, errors='coerce', dayfirst=True)
-                    if not pd.isna(parsed):
-                        created_at_value = parsed.to_pydatetime()
-                except Exception:
+                    created_at_value = datetime.fromisoformat(coerced_date)
+                except ValueError:
                     created_at_value = None
 
     params = {k: v for k, v in record.items() if k != 'created_at_override'}
@@ -2396,7 +3051,7 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             )
 
         # Process PRA data
-        property_records, file_numbers = _process_pra_data(dataframe)
+        property_records, cofo_records, file_numbers = _process_pra_data(dataframe)
         
         # Assign property IDs to both tables
         # Get the next property ID counter that works for all tables
@@ -2407,6 +3062,9 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             prop_id = str(next_prop_id_counter + i)
             record['prop_id'] = prop_id
             record['test_control'] = mode
+            if i < len(cofo_records):
+                cofo_records[i]['prop_id'] = prop_id
+                cofo_records[i]['test_control'] = mode
         
         # Assign property IDs to file numbers (continue counter)
         for i, record in enumerate(file_numbers):
@@ -2415,7 +3073,7 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             record['test_control'] = mode
 
         # Format dates for UI preview
-        _apply_ui_date_format_to_session_records(property_records, None, file_numbers)
+        _apply_ui_date_format_to_session_records(property_records, cofo_records, file_numbers)
         
         # Build QC rows for file numbers using file indexing rules
         qc_issues_raw, qc_rows = _build_pra_file_number_qc(file_numbers)
@@ -2426,6 +3084,21 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             'year_issues': len(qc_issues_raw.get('year', [])),
             'spacing_issues': len(qc_issues_raw.get('spacing', []))
         }
+
+        for record in property_records:
+            record['hasIssues'] = False
+        for record in cofo_records:
+            record['hasIssues'] = False
+
+        for issue_list in qc_issues_raw.values():
+            for issue in issue_list:
+                idx = issue.get('record_index')
+                if idx is None:
+                    continue
+                if 0 <= idx < len(property_records):
+                    property_records[idx]['hasIssues'] = True
+                if 0 <= idx < len(cofo_records):
+                    cofo_records[idx]['hasIssues'] = True
 
         # Detect duplicates for property and file-number tables
         duplicates_property = _detect_pra_duplicates(property_records)
@@ -2439,11 +3112,27 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             for record in file_numbers
         ]
         duplicates_file = _detect_pra_duplicates(file_number_duplicate_probe)
+        cofo_duplicates = _detect_cofo_duplicates(cofo_records, mode)
 
         duplicates = {
             'property_records': duplicates_property,
             'file_numbers': duplicates_file
         }
+
+        duplicate_file_numbers_existing = {entry['file_number'] for entry in cofo_duplicates.get('database', [])}
+        for index, record in enumerate(cofo_records):
+            file_number = _normalize_string(record.get('mlsFNo'))
+            if file_number and file_number in duplicate_file_numbers_existing and record.get('is_cofo_record'):
+                record['duplicate_in_cofo'] = True
+                record['skip_import'] = True
+                record['duplicate_reason'] = 'Existing CofO record'
+                record['hasIssues'] = True
+            else:
+                record['duplicate_in_cofo'] = False
+                record['skip_import'] = False
+                record['duplicate_reason'] = None
+
+        ready_records = sum(1 for rec in property_records if not rec.get('hasIssues'))
 
         # Extract staging data (entities and customers with reason_retired)
         entity_records, customer_records, staging_summary = extract_entity_and_customer_data(
@@ -2463,11 +3152,13 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             "type": "pra",
             "test_control": mode,
             "property_records": property_records,
+            "cofo_records": cofo_records,
             "file_numbers": file_numbers,
             "duplicates": duplicates,
             "file_number_qc": qc_rows,
             "qc_summary": qc_summary,
             "qc_issues_raw": qc_issues_raw,
+            "cofo_duplicates": cofo_duplicates,
             "entity_staging_records": entity_records,
             "customer_staging_records": customer_records,
             "staging_summary": staging_summary
@@ -2479,10 +3170,11 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             len(duplicates_property.get('csv', [])) +
             len(duplicates_property.get('database', [])) +
             len(duplicates_file.get('csv', [])) +
-            len(duplicates_file.get('database', []))
+            len(duplicates_file.get('database', [])) +
+            len(cofo_duplicates.get('csv', [])) +
+            len(cofo_duplicates.get('database', []))
         )
         validation_issues = qc_summary['total_issues']
-        ready_records = total_records
 
         return {
             "session_id": session_id,
@@ -2492,6 +3184,7 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             "validation_issues": validation_issues,
             "ready_records": ready_records,
             "property_records": property_records,
+            "cofo_records": cofo_records,
             "file_numbers": file_numbers,
             "duplicates": duplicates,
             "file_number_qc": qc_rows,
@@ -2499,6 +3192,7 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
             "staging_summary": staging_summary,
             "entity_staging_preview": entity_records,
             "customer_staging_preview": customer_records,
+            "cofo_duplicates_ignored": cofo_duplicates.get('database', []),
             "test_control": mode
         }
 
@@ -2506,6 +3200,57 @@ async def upload_pra(test_control: str = Form(...), file: UploadFile = File(...)
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+
+
+@app.post("/api/pra/update/{session_id}")
+async def update_pra_record(session_id: str, payload: PRARecordUpdate):
+    if not hasattr(app, 'sessions') or session_id not in app.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = app.sessions[session_id]
+    try:
+        _apply_pra_field_update(
+            session_data.get('property_records', []),
+            session_data.get('cofo_records', []),
+            session_data.get('file_numbers', []),
+            payload.record_type,
+            payload.record_index,
+            payload.field,
+            payload.value
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unable to update record: {exc}")
+
+    refreshed = _refresh_pra_session_state(session_data)
+    refreshed['test_control'] = session_data.get('test_control')
+    return refreshed
+
+
+@app.post("/api/pra/delete/{session_id}")
+async def delete_pra_record(session_id: str, payload: PRARecordDelete):
+    if not hasattr(app, 'sessions') or session_id not in app.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session_data = app.sessions[session_id]
+    property_records = session_data.get('property_records', [])
+    cofo_records = session_data.get('cofo_records', [])
+    file_numbers = session_data.get('file_numbers', [])
+    index = payload.record_index
+
+    if index < 0 or index >= len(property_records):
+        raise HTTPException(status_code=400, detail="Invalid record index")
+
+    # Maintain alignment across arrays regardless of originating tab
+    if 0 <= index < len(property_records):
+        property_records.pop(index)
+    if 0 <= index < len(cofo_records):
+        cofo_records.pop(index)
+    if 0 <= index < len(file_numbers):
+        file_numbers.pop(index)
+
+    refreshed = _refresh_pra_session_state(session_data)
+    refreshed['test_control'] = session_data.get('test_control')
+    return refreshed
 
 
 @app.post("/api/import-pra/{session_id}")
@@ -2520,6 +3265,7 @@ async def import_pra(session_id: str):
 
     db = SessionLocal()
     property_records_count = 0
+    cofo_records_count = 0
     now = datetime.utcnow()
     test_control = (session_data.get('test_control') or 'PRODUCTION').upper()
 
@@ -2533,6 +3279,53 @@ async def import_pra(session_id: str):
             _import_property_record(db, record, now, staging_table='pra')
             property_records_count += 1
 
+        # Import CofO rows, skipping duplicates flagged during preview
+        duplicate_existing: set[str] = set()
+        cofo_duplicates = session_data.get('cofo_duplicates') or {}
+        for entry in cofo_duplicates.get('database', []):
+            file_number = entry.get('file_number')
+            if file_number:
+                duplicate_existing.add(file_number)
+
+        for record in session_data.get('cofo_records', []):
+            if not record.get('is_cofo_record'):
+                continue
+            file_number = _normalize_string(record.get('mlsFNo'))
+            if record.get('skip_import') or (file_number and file_number in duplicate_existing):
+                continue
+
+            cofo_entry = CofO(
+                mls_fno=record.get('mlsFNo'),
+                title_type='PRA',
+                transaction_type=record.get('transaction_type'),
+                instrument_type=record.get('instrument_type'),
+                transaction_date=record.get('transaction_date') or record.get('transaction_date_raw'),
+                transaction_time=record.get('transaction_time') or record.get('transaction_time_raw'),
+                serial_no=record.get('serialNo'),
+                page_no=record.get('pageNo'),
+                volume_no=record.get('volumeNo'),
+                reg_no=record.get('regNo'),
+                property_description=record.get('property_description'),
+                location=record.get('location'),
+                plot_no=record.get('plot_no'),
+                lgsa_or_city=None,
+                land_use=None,
+                cofo_type=None,
+                grantor=record.get('Grantor'),
+                grantee=record.get('Grantee'),
+                cofo_date=record.get('cofo_date') or record.get('reg_date') or record.get('reg_date_raw'),
+                prop_id=record.get('prop_id'),
+                test_control=test_control
+            )
+
+            existing = db.query(CofO).filter(CofO.mls_fno == cofo_entry.mls_fno, CofO.test_control == test_control).first()
+            if existing:
+                _update_cofo(existing, cofo_entry)
+                existing.test_control = test_control
+            else:
+                db.add(cofo_entry)
+            cofo_records_count += 1
+
         # Import staging data (entities and customers with reason_retired)
         staging_result = perform_staging_import(
             db,
@@ -2540,7 +3333,9 @@ async def import_pra(session_id: str):
             session_data.get('filename', 'pra_upload.csv'),
             test_control,
             'transaction_type',
-            source='pra'
+            source='pra',
+            precomputed_entities=session_data.get('entity_staging_records'),
+            precomputed_customers=session_data.get('customer_staging_records')
         )
 
         db.commit()
@@ -2550,8 +3345,9 @@ async def import_pra(session_id: str):
 
         return {
             "success": True,
-            "imported_count": property_records_count,
+            "imported_count": property_records_count + cofo_records_count,
             "property_records_count": property_records_count,
+            "cofo_records_count": cofo_records_count,
             "staging_import": {
                 "entity_summary": staging_result.get('entity_summary', {}),
                 "customer_summary": staging_result.get('customer_summary', {}),
@@ -2614,15 +3410,10 @@ def _recalculate_pic_serial_state(
     """Refresh derived serial metadata for PIC rows."""
     register_serial = _normalize_string(record.get('serial_register')) or _normalize_string(record.get('serialNo'))
     card_serial = _normalize_string(record.get('oldKNNo'))
-    legacy_card_serial = _normalize_string(record.get('SerialNo'))
-
-    if not card_serial and legacy_card_serial:
-        card_serial = legacy_card_serial
-        record['oldKNNo'] = legacy_card_serial
 
     record['serial_register'] = register_serial
     record['serialNo'] = register_serial
-    record['SerialNo'] = legacy_card_serial or card_serial
+    record['oldKNNo'] = card_serial
 
     fallback_used = bool(card_serial and not register_serial)
     record['serial_fallback_used'] = fallback_used
@@ -2644,7 +3435,6 @@ def _recalculate_pic_serial_state(
         cofo_record['serialNo'] = register_serial
         cofo_record['oldKNNo'] = card_serial
         cofo_record['serial_fallback_used'] = fallback_used
-        cofo_record['SerialNo'] = record.get('SerialNo')
         cofo_record['serial_missing'] = record['serial_missing']
         if register_serial and page_value and volume_value:
             cofo_record['regNo'] = record['regNo']
@@ -2653,26 +3443,258 @@ def _recalculate_pic_serial_state(
             cofo_record['reg_particulars_missing'] = bool(partial_reg_values)
 
 
+PIC_COFO_TRANSACTION_VALUES = {"cofo", "certificate of occupancy"}
+
+
+def _is_pic_cofo_transaction(value: Optional[str]) -> bool:
+    """Return True when a transaction type should appear in CofO preview/import."""
+    normalized = _normalize_string(value)
+    if not normalized:
+        return False
+    return normalized.lower() in PIC_COFO_TRANSACTION_VALUES
+
+
+def _deduplicate_pic_records(
+    property_records: List[Dict[str, Any]],
+    cofo_records: List[Dict[str, Any]],
+    file_number_records: List[Dict[str, Any]],
+    entity_records: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Deduplicate PIC records by their identifiers.
+    
+    Rules:
+    - Property Records: YES duplicates allowed (keep all)
+    - CofO: NO duplicates (deduplicate by mlsFNo/oldKNNo)
+    - File Numbers: NO duplicates (handled by _deduplicate_pic_file_numbers)
+    - Entities: NO duplicates (deduplicate by entity_id/file_number)
+    - Customers: YES duplicates allowed (keep all, not deduped here)
+    """
+    def normalize_key(value: Optional[str]) -> str:
+        """Normalize a value for comparison."""
+        if not value:
+            return ""
+        normalized = _normalize_string(value)
+        if not normalized:
+            return ""
+        return _strip_all_whitespace(normalized).upper()
+    
+    # Property Records: Keep ALL (YES duplicates allowed)
+    # No deduplication needed
+    
+    # CofO: Remove duplicates by mlsFNo or oldKNNo
+    cofo_seen = set()
+    unique_cofo_records = []
+    
+    for cofo_record in cofo_records:
+        file_number = cofo_record.get('mlsFNo') or cofo_record.get('oldKNNo')
+        key = normalize_key(file_number)
+        
+        if not key:
+            # No identifier, include it anyway
+            unique_cofo_records.append(cofo_record)
+            continue
+        
+        if key in cofo_seen:
+            # Duplicate found, skip it
+            continue
+        
+        cofo_seen.add(key)
+        unique_cofo_records.append(cofo_record)
+    
+    # File Numbers: Remove duplicates (via existing function)
+    file_number_records = _deduplicate_pic_file_numbers(file_number_records)
+    
+    # Entities: Remove duplicates by entity_id or file_number
+    entity_seen = set()
+    unique_entity_records = []
+    
+    for entity_record in entity_records:
+        entity_id = entity_record.get('entity_id') or entity_record.get('entityId')
+        file_number = entity_record.get('file_number') or entity_record.get('fileNumber')
+        
+        # Use entity_id as primary key, file_number as fallback
+        key_value = entity_id or file_number
+        key = normalize_key(key_value)
+        
+        if not key:
+            # No identifier, include it anyway
+            unique_entity_records.append(entity_record)
+            continue
+        
+        if key in entity_seen:
+            # Duplicate found, skip it
+            continue
+        
+        entity_seen.add(key)
+        unique_entity_records.append(entity_record)
+    
+    # Customers: Keep ALL (YES duplicates allowed)
+    # No deduplication needed
+    
+    return property_records, unique_cofo_records, file_number_records, unique_entity_records
+
+
+def _deduplicate_pic_file_numbers(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove duplicate file-number entries (case-insensitive, whitespace-insensitive)."""
+    seen = set()
+    unique: List[Dict[str, Any]] = []
+
+    for record in records:
+        raw_value = record.get('mlsfNo') or record.get('mlsFNo')
+        normalized = _normalize_string(raw_value)
+        if not normalized:
+            unique.append(record)
+            continue
+
+        key = _strip_all_whitespace(normalized).upper()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        unique.append(record)
+
+    return unique
+
+
+def _normalize_file_number_key(value: Optional[str]) -> Optional[str]:
+    """Return a canonical comparison key for file numbers."""
+    normalized = _normalize_string(value)
+    if not normalized:
+        return None
+    collapsed = _strip_all_whitespace(normalized)
+    if not collapsed:
+        return None
+    return collapsed.upper()
+
+
+def _pic_file_number_exists(db, file_number: Optional[str]) -> bool:
+    """Check if a file number already exists (ignoring whitespace/case)."""
+    key = _normalize_file_number_key(file_number)
+    if not key:
+        return False
+    normalized_column = func.upper(func.replace(FileNumber.mlsf_no, ' ', ''))
+    return db.query(FileNumber.id).filter(normalized_column == key).first() is not None
+
+
+def _pic_cofo_exists(db, file_number: Optional[str]) -> bool:
+    """Check if a CofO entry already exists for the given file number."""
+    key = _normalize_file_number_key(file_number)
+    if not key:
+        return False
+    normalized_column = func.upper(func.replace(CofO.mls_fno, ' ', ''))
+    return db.query(CofO.id).filter(normalized_column == key).first() is not None
+
+
+def _import_pic_file_number_record(
+    db,
+    record: Dict[str, Any],
+    timestamp: datetime,
+    test_control: str
+) -> bool:
+    """Insert a PIC file-number record into the fileNumber table."""
+    file_number = _normalize_string(record.get('mlsfNo') or record.get('mlsFNo'))
+    if not file_number:
+        return False
+
+    created_by_value = _normalize_string(record.get('created_by') or record.get('CreatedBy'))
+    file_name_value = _normalize_string(record.get('FileName'))
+    location_value = _normalize_string(record.get('location'))
+    plot_no_value = _normalize_string(record.get('plot_no'))
+    tp_no_value = _normalize_string(record.get('tp_no'))
+    tracking_id_value = _normalize_string(record.get('tracking_id')) or _generate_tracking_id()
+    source_value = _normalize_string(record.get('SOURCE') or record.get('source')) or 'Property Index Card'
+    type_value = _normalize_string(record.get('type')) or 'MLS'
+
+    entry = FileNumber(
+        mlsf_no=file_number,
+        file_name=file_name_value or file_number,
+        created_at=timestamp,
+        location=location_value,
+        created_by=created_by_value,
+        updated_by=created_by_value,
+        type=type_value,
+        source=source_value,
+        plot_no=plot_no_value,
+        tp_no=tp_no_value,
+        tracking_id=tracking_id_value,
+        test_control=test_control
+    )
+    db.add(entry)
+    return True
+
+
+def _synchronize_pic_cofo_visibility(
+    property_records: List[Dict[str, Any]],
+    cofo_records: List[Dict[str, Any]]
+) -> None:
+    """Keep CofO preview flags aligned with property transaction type rules."""
+    max_len = max(len(property_records), len(cofo_records))
+    for idx in range(max_len):
+        property_record = property_records[idx] if idx < len(property_records) else None
+        cofo_record = cofo_records[idx] if idx < len(cofo_records) else None
+
+        is_valid = False
+        if property_record is not None:
+            is_valid = _is_pic_cofo_transaction(property_record.get('transaction_type'))
+            property_record['is_valid_cofo_transaction'] = is_valid
+
+        if cofo_record is not None:
+            cofo_record['is_valid_cofo_transaction'] = is_valid
+            cofo_record['skip_cofo_preview'] = not is_valid
+
+
+def _annotate_pic_party_types(record: Dict[str, Any]) -> None:
+    """Annotate grantor/grantee-style parties with customer type classifications."""
+    party_mappings = (
+        ('Grantor', 'grantor_type'),
+        ('Assignor', 'assignor_type'),
+        ('Grantee', 'grantee_type'),
+        ('Assignee', 'assignee_type'),
+        ('secondary_assignee', 'secondary_assignee_type'),
+    )
+
+    for field_name, type_key in party_mappings:
+        value = _normalize_string(record.get(field_name))
+        if value:
+            record[type_key] = _classify_customer_type(value)
+        else:
+            record.pop(type_key, None)
+
+
 def _build_pic_property_record(row: pd.Series) -> Optional[Dict[str, Any]]:
     """Convert a PIC CSV row into a property record payload."""
-    file_number = _normalize_string(
+    original_file_number = _normalize_string(
         row.get('MLSFileNo')
         or row.get('MLS File No')
         or row.get('mlsFNo')
         or row.get('mls_file_no')
     )
 
-    if not file_number:
-        return None
-
     transaction_type = _normalize_string(row.get('transaction_type'))
     assignor = _normalize_string(row.get('Grantor'))
     grantee = _normalize_string(row.get('Grantee'))
     assignee = _normalize_string(row.get('Assignee')) or grantee
 
-    serial_register = _normalize_string(row.get('serialNo'))
-    legacy_card_serial = _normalize_string(row.get('SerialNo'))
-    serial_card = _normalize_string(row.get('oldKNNo')) or legacy_card_serial
+    # Extract serial numbers: serialNo is the actual Serial No, oldKNNo is the Old KN Number
+    # Use _normalize_numeric_field to handle potential numeric values and remove .0
+    serial_register = _normalize_numeric_field(row.get('serialNo'))
+    serial_card = _normalize_old_kn_number(
+        row.get('oldKNNo')
+        or row.get('OldKNNo')
+        or row.get('old_kn_no')
+        or row.get('Old KN No')
+    )
+
+    fallback_file_number = serial_register or serial_card
+    file_number = original_file_number or fallback_file_number
+    file_number_source = 'MLSFileNo' if original_file_number else (
+        'serialNo' if serial_register else (
+            'oldKNNo' if serial_card else 'none'
+        )
+    )
+
+    # Allow records even without file_number for PIC
     page_no = _normalize_numeric_field(row.get('pageNo'))
     volume_no = _normalize_numeric_field(row.get('volumeNo'))
     reg_no = _normalize_string(row.get('regNo'))
@@ -2701,6 +3723,8 @@ def _build_pic_property_record(row: pd.Series) -> Optional[Dict[str, Any]]:
         'mlsFNo': file_number,
         'fileno': file_number,
         'file_number': file_number,
+        'mlsFNo_original': original_file_number,
+        'mlsFNo_source': file_number_source,
         'transaction_type': transaction_type,
         'instrument_type': transaction_type,
         'Assignor': assignor,
@@ -2725,12 +3749,11 @@ def _build_pic_property_record(row: pd.Series) -> Optional[Dict[str, Any]]:
         'plot_size': _normalize_string(row.get('plot_size')),
         'period': period,
         'period_unit': period_unit,
-    'serial_register': serial_register,
-    'serialNo': serial_register,
-    'SerialNo': legacy_card_serial,
-    'oldKNNo': serial_card,
-    'serial_fallback_used': bool(serial_card and not serial_register),
-    'serial_missing': not bool(serial_register),
+        'serial_register': serial_register,
+        'serialNo': serial_register,
+        'oldKNNo': serial_card,
+        'serial_fallback_used': bool(serial_card and not serial_register),
+        'serial_missing': not bool(serial_register),
         'pageNo': page_no,
         'volumeNo': volume_no,
         'regNo': reg_no,
@@ -2768,15 +3791,18 @@ def _build_pic_property_record(row: pd.Series) -> Optional[Dict[str, Any]]:
         'migrated_by': 'PIC Import',
         'tracking_id': None,
         'prop_id': None,
-        'hasIssues': False
+        'hasIssues': False,
+        'is_valid_cofo_transaction': _is_pic_cofo_transaction(transaction_type)
     }
 
+    _annotate_pic_party_types(record)
     _recalculate_pic_serial_state(record)
     return record
 
 
 def _build_pic_cofo_record(property_record: Dict[str, Any]) -> Dict[str, Any]:
     """Create a CofO preview entry from a PIC property record."""
+    is_valid_transaction = _is_pic_cofo_transaction(property_record.get('transaction_type'))
     return {
         'mlsFNo': property_record.get('mlsFNo'),
         'transaction_type': property_record.get('transaction_type'),
@@ -2785,6 +3811,11 @@ def _build_pic_cofo_record(property_record: Dict[str, Any]) -> Dict[str, Any]:
         'Grantee': property_record.get('Grantee'),
         'Assignor': property_record.get('Assignor'),
         'Assignee': property_record.get('Assignee'),
+        'grantor_type': property_record.get('grantor_type'),
+        'assignor_type': property_record.get('assignor_type'),
+        'grantee_type': property_record.get('grantee_type'),
+        'assignee_type': property_record.get('assignee_type'),
+        'secondary_assignee_type': property_record.get('secondary_assignee_type'),
         'land_use': property_record.get('land_use'),
         'property_description': property_record.get('property_description'),
         'location': property_record.get('location'),
@@ -2807,24 +3838,68 @@ def _build_pic_cofo_record(property_record: Dict[str, Any]) -> Dict[str, Any]:
         'migration_source': property_record.get('migration_source'),
         'migrated_by': property_record.get('migrated_by'),
         'prop_id': property_record.get('prop_id'),
-        'hasIssues': property_record.get('hasIssues', False)
+        'hasIssues': property_record.get('hasIssues', False),
+        'is_valid_cofo_transaction': is_valid_transaction,
+        'skip_cofo_preview': not is_valid_transaction
     }
 
 
-def _build_pic_file_number_record(property_record: Dict[str, Any]) -> Dict[str, Any]:
-    """Create a file number entry from a PIC property record."""
-    return {
-        'mlsfNo': property_record.get('mlsFNo'),
-        'FileName': property_record.get('Grantee') or property_record.get('grantee'),
+FILE_NUMBER_LABEL_PATTERN = re.compile(r'^[A-Z0-9]{2,}(?:[-/][A-Z0-9]{1,}){1,5}$')
+
+
+def _looks_like_file_number_label(label: Optional[str], file_number: Optional[str]) -> bool:
+    candidate = _normalize_string(label)
+    if not candidate:
+        return False
+
+    candidate_key = _normalize_file_number_key(candidate)
+    if not candidate_key:
+        return False
+
+    file_key = _normalize_file_number_key(file_number)
+    if file_key and candidate_key == file_key:
+        return True
+
+    if FILE_NUMBER_LABEL_PATTERN.fullmatch(candidate_key):
+        return True
+
+    if any(char.isdigit() for char in candidate) and any(sep in candidate for sep in {'-', '/'}):
+        return True
+
+    return False
+
+
+def _build_pic_file_number_record(property_record: Dict[str, Any], property_index: int) -> Optional[Dict[str, Any]]:
+    """Create a file-number preview entry when the grantee looks valid."""
+    file_number = _normalize_string(property_record.get('mlsFNo'))
+    grantee_value = property_record.get('Grantee') or property_record.get('grantee')
+    grantee = _normalize_string(grantee_value)
+
+    if not grantee:
+        return None
+
+    if _looks_like_file_number_label(grantee_value, file_number):
+        return None
+
+    entry = {
+        'mlsfNo': file_number,
+        'grantee': grantee,
+        'FileName': grantee,
         'location': property_record.get('location'),
-        'created_by': property_record.get('created_by'), 
-        'type': property_record.get('transaction_type'),
+        'created_by': property_record.get('created_by'),
         'SOURCE': property_record.get('source'),
         'plot_no': property_record.get('plot_no'),
         'tp_no': property_record.get('tp_no'),
         'tracking_id': property_record.get('tracking_id'),
-        'hasIssues': property_record.get('hasIssues', False)
+        'hasIssues': property_record.get('hasIssues', False),
+        'property_index': property_index
     }
+
+    tp_no = _normalize_string(property_record.get('tp_no'))
+    if tp_no:
+        entry['tp_no'] = tp_no
+
+    return entry
 
 
 def _process_pic_data(
@@ -2846,13 +3921,64 @@ def _process_pic_data(
         tracking_id = record.get('tracking_id') or _generate_tracking_id()
         record['tracking_id'] = tracking_id
 
+        property_index = len(property_records)
         property_records.append(record)
         cofo_records.append(_build_pic_cofo_record(record.copy()))
-        file_number_entry = _build_pic_file_number_record(record.copy())
-        file_number_entry['tracking_id'] = tracking_id
-        file_number_records.append(file_number_entry)
 
+        file_number_entry = _build_pic_file_number_record(record.copy(), property_index)
+        if file_number_entry:
+            file_number_entry['tracking_id'] = tracking_id
+            file_number_records.append(file_number_entry)
+
+    _synchronize_pic_cofo_visibility(property_records, cofo_records)
+    file_number_records = _deduplicate_pic_file_numbers(file_number_records)
     return property_records, cofo_records, file_number_records
+
+
+def _build_pra_cofo_record(property_record: Dict[str, Any], *, is_cofo_record: bool) -> Dict[str, Any]:
+    """Create a CofO preview payload from a PRA property record."""
+    transaction_type = property_record.get('transaction_type')
+    grantor = property_record.get('Grantor') or property_record.get('grantor_assignor')
+    grantee = property_record.get('Grantee') or property_record.get('grantee_assignee')
+    location = property_record.get('location') or property_record.get('property_description')
+    transaction_date = property_record.get('transaction_date') or property_record.get('transaction_date_raw')
+    reg_date = property_record.get('date_created') or property_record.get('reg_date') or property_record.get('reg_date_raw')
+
+    return {
+        'mlsFNo': property_record.get('mlsFNo'),
+        'transaction_type': transaction_type,
+        'instrument_type': property_record.get('instrument_type') or transaction_type,
+        'Grantor': grantor,
+        'Grantee': grantee,
+        'Assignor': grantor,
+        'Assignee': grantee,
+        'property_description': location,
+        'location': location,
+        'plot_no': property_record.get('plot_no'),
+        'transaction_date': transaction_date,
+        'transaction_date_raw': property_record.get('transaction_date_raw') or transaction_date,
+        'transaction_time': None,
+        'transaction_time_raw': None,
+        'serialNo': property_record.get('serialNo'),
+        'pageNo': property_record.get('pageNo'),
+        'volumeNo': property_record.get('volumeNo'),
+        'regNo': property_record.get('regNo'),
+        'created_by': property_record.get('created_by'),
+        'cofo_date': reg_date,
+        'reg_date': reg_date,
+        'reg_date_raw': property_record.get('reg_date_raw') or reg_date,
+        'source': 'PRA',
+        'migration_source': 'PRA',
+        'migrated_by': 'PRA Import',
+        'prop_id': property_record.get('prop_id'),
+        'test_control': property_record.get('test_control'),
+        'hasIssues': property_record.get('hasIssues', False),
+        'is_cofo_record': bool(is_cofo_record),
+        'skip_import': False,
+        'duplicate_in_cofo': False,
+        'duplicate_reason': None
+    }
+
 
 def _run_pic_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     """Run QC checks for PIC records using PRA-style file-number validation only."""
@@ -2903,6 +4029,22 @@ def _apply_pic_field_update(
             _recalculate_pic_serial_state(record, cofo_record)
             return
 
+        if field in {'Grantor', 'Grantee', 'Assignor', 'Assignee'}:
+            record[field] = normalized
+            type_key = f"{field.lower()}_type"
+            if normalized:
+                record[type_key] = _classify_customer_type(normalized)
+            else:
+                record.pop(type_key, None)
+
+            if cofo_record is not None:
+                cofo_record[field] = normalized
+                if normalized:
+                    cofo_record[type_key] = record[type_key]
+                else:
+                    cofo_record.pop(type_key, None)
+            return
+
         if field in {
             'assignment_date', 'surrender_date', 'revoked_date', 'date_expired',
             'lease_begins', 'lease_expires', 'date_recommended', 'date_approved', 'date_created'
@@ -2950,6 +4092,7 @@ def _refresh_pic_session_state(session_data: Dict[str, Any]) -> Dict[str, Any]:
     cofo_records = session_data.get('cofo_records', [])
     file_number_records = session_data.get('file_number_records', [])
 
+    _synchronize_pic_cofo_visibility(property_records, cofo_records)
     qc_issues = _run_pic_qc_validation(property_records)
     for idx, record in enumerate(property_records):
         has_issue = record.get('hasIssues', False)
@@ -2961,14 +4104,16 @@ def _refresh_pic_session_state(session_data: Dict[str, Any]) -> Dict[str, Any]:
             cofo_records[idx]['prop_id'] = record.get('prop_id')
             cofo_records[idx]['prop_id_source'] = record.get('prop_id_source')
 
-    file_number_records = [
-        _build_pic_file_number_record(rec.copy())
-        for rec in property_records
-    ]
+    file_number_records: List[Dict[str, Any]] = []
     for idx, rec in enumerate(property_records):
-        if idx < len(file_number_records):
-            file_number_records[idx]['hasIssues'] = rec.get('hasIssues', False)
-            file_number_records[idx]['tracking_id'] = rec.get('tracking_id')
+        entry = _build_pic_file_number_record(rec.copy(), idx)
+        if not entry:
+            continue
+        entry['hasIssues'] = rec.get('hasIssues', False)
+        entry['tracking_id'] = rec.get('tracking_id')
+        file_number_records.append(entry)
+
+    file_number_records = _deduplicate_pic_file_numbers(file_number_records)
 
     session_data['property_records'] = property_records
     session_data['cofo_records'] = cofo_records

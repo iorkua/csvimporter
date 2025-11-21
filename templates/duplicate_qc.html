@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Duplicate QC - KLAES Data Tools</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container-fluid">
+        <div class="row">
+            <nav id="sidebar" class="col-md-3 col-lg-2 d-md-block bg-dark sidebar collapse">
+                <div class="position-sticky pt-3">
+                    <div class="sidebar-header text-center mb-4">
+                        <h4 class="text-white">
+                            <i class="fas fa-file-csv text-primary"></i>
+                            KLAES Data Tools
+                        </h4>
+                    </div>
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/">
+                                <i class="fas fa-home me-2"></i>
+                                Dashboard
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/file-number-import">
+                                <i class="fas fa-book me-2"></i>
+                                FileNO Imports
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/file-indexing">
+                                <i class="fas fa-folder-open me-2"></i>
+                                File Indexing
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/excel-converter">
+                                <i class="fas fa-file-excel me-2"></i>
+                                Excel Converter
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/file-history">
+                                <i class="fas fa-history me-2"></i>
+                                File History
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/pra">
+                                <i class="fas fa-chart-line me-2"></i>
+                                PRA
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/pic">
+                                <i class="fas fa-image me-2"></i>
+                                PIC
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link active text-white" href="/duplicate-qc">
+                                <i class="fas fa-clone me-2"></i>
+                                Duplicate QC
+                            </a>
+                        </li>
+                        <hr class="text-secondary">
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/settings">
+                                <i class="fas fa-cog me-2"></i>
+                                Settings
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/help">
+                                <i class="fas fa-question-circle me-2"></i>
+                                Help
+                            </a>
+                        </li>
+                    </ul>
+                    <div class="sidebar-footer mt-5 pt-3 border-top border-secondary">
+                        <small class="text-muted d-block text-center">
+                            Version 1.0.0
+                        </small>
+                    </div>
+                </div>
+            </nav>
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4">
+                <div class="d-flex justify-content-between flex-wrap flex-md-nowrap align-items-center pt-3 pb-2 mb-3 border-bottom">
+                    <h1 class="h2">
+                        <button class="btn btn-outline-secondary d-md-none me-3" type="button" data-bs-toggle="collapse" data-bs-target="#sidebar">
+                            <i class="fas fa-bars"></i>
+                        </button>
+                        <i class="fas fa-clone me-2"></i>
+                        Duplicate QC
+                    </h1>
+                    <div class="input-group input-group-sm w-auto">
+                        <label class="input-group-text" for="duplicateTestControl">Mode</label>
+                        <select id="duplicateTestControl" class="form-select">
+                            <option value="">All</option>
+                            <option value="PRODUCTION">Production</option>
+                            <option value="TEST">Test</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="duplicateAlertContainer"></div>
+
+                <div class="row g-3 mb-3" id="duplicateSummaryRow">
+                    <div class="col-md-4">
+                        <div class="card border-info">
+                            <div class="card-body">
+                                <h6 class="text-info mb-1">File Indexing</h6>
+                                <div class="fs-4" id="fileIndexingDuplicateCount">0</div>
+                                <small class="text-muted">Duplicate groups</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card border-warning">
+                            <div class="card-body">
+                                <h6 class="text-warning mb-1">CofO Staging</h6>
+                                <div class="fs-4" id="cofoDuplicateCount">0</div>
+                                <small class="text-muted">Duplicate groups</small>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card border-danger">
+                            <div class="card-body">
+                                <h6 class="text-danger mb-1">File Number</h6>
+                                <div class="fs-4" id="fileNumberDuplicateCount">0</div>
+                                <small class="text-muted">Duplicate groups</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <ul class="nav nav-pills mb-3" id="duplicateTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="tab-file-indexing" data-bs-toggle="pill" data-bs-target="#pane-file-indexing" type="button" role="tab">
+                            File Indexing
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="tab-cofo" data-bs-toggle="pill" data-bs-target="#pane-cofo" type="button" role="tab">
+                            CofO
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="tab-file-number" data-bs-toggle="pill" data-bs-target="#pane-file-number" type="button" role="tab">
+                            File Number
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content" id="duplicateTabContent">
+                    <div class="tab-pane fade show active" id="pane-file-indexing" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span class="fw-semibold">File Indexing Duplicates</span>
+                                <button type="button" class="btn btn-sm btn-danger" id="delete-file-indexing" disabled>
+                                    <i class="fas fa-trash-alt me-1"></i>
+                                    Delete Non-Locked
+                                </button>
+                            </div>
+                            <div class="card-body p-0">
+                                <div class="table-responsive">
+                                    <table class="table table-sm mb-0 align-middle" id="table-file-indexing">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th style="width: 60px;">Keep</th>
+                                                <th>ID</th>
+                                                <th>File Number</th>
+                                                <th>File Name</th>
+                                                <th>MDC Batch No</th>
+                                                <th>Tracking ID</th>
+                                                <th>Prop ID</th>
+                                                <th>Indexed By</th>
+                                                <th>Registry</th>
+                                                <th>Created</th>
+                                                <th>Updated</th>
+                                                <th>Test Control</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="card-footer d-flex justify-content-between align-items-center">
+                                <div class="small text-muted" id="file-indexing-pagination"></div>
+                                <div class="btn-group btn-group-sm" role="group" id="file-indexing-page-buttons"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="pane-cofo" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span class="fw-semibold">CofO Duplicates</span>
+                                <button type="button" class="btn btn-sm btn-danger" id="delete-cofo" disabled>
+                                    <i class="fas fa-trash-alt me-1"></i>
+                                    Delete Non-Locked
+                                </button>
+                            </div>
+                            <div class="card-body p-0">
+                                <div class="table-responsive">
+                                    <table class="table table-sm mb-0 align-middle" id="table-cofo">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th style="width: 60px;">Keep</th>
+                                                <th>ID</th>
+                                                <th>File Number</th>
+                                                <th>Grantor</th>
+                                                <th>Grantee</th>
+                                                <th>Captured By</th>
+                                                <th>Created</th>
+                                                <th>Updated</th>
+                                                <th>Test Control</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="card-footer d-flex justify-content-between align-items-center">
+                                <div class="small text-muted" id="cofo-pagination"></div>
+                                <div class="btn-group btn-group-sm" role="group" id="cofo-page-buttons"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="pane-file-number" role="tabpanel">
+                        <div class="card">
+                            <div class="card-header d-flex justify-content-between align-items-center">
+                                <span class="fw-semibold">File Number Duplicates</span>
+                                <button type="button" class="btn btn-sm btn-danger" id="delete-file-number" disabled>
+                                    <i class="fas fa-trash-alt me-1"></i>
+                                    Delete Non-Locked
+                                </button>
+                            </div>
+                            <div class="card-body p-0">
+                                <div class="table-responsive">
+                                    <table class="table table-sm mb-0 align-middle" id="table-file-number">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th style="width: 60px;">Keep</th>
+                                                <th>ID</th>
+                                                <th>File Number</th>
+                                                <th>File Name</th>
+                                                <th>Tracking ID</th>
+                                                <th>Created</th>
+                                                <th>Updated</th>
+                                                <th>Test Control</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="card-footer d-flex justify-content-between align-items-center">
+                                <div class="small text-muted" id="file-number-pagination"></div>
+                                <div class="btn-group btn-group-sm" role="group" id="file-number-page-buttons"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/static/js/duplicate-qc.js?v=20251118-4"></script>
+</body>
+</html>

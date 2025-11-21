@@ -34,6 +34,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link text-light" href="/file-number-import">
+                                <i class="fas fa-book me-2"></i>
+                                FileNO Imports
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link text-light" href="/file-indexing">
                                 <i class="fas fa-folder-open me-2"></i>
                                 File Indexing
@@ -55,6 +61,12 @@
                             <a class="nav-link text-light" href="/pic">
                                 <i class="fas fa-image me-2"></i>
                                 PIC
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/duplicate-qc">
+                                <i class="fas fa-clone me-2"></i>
+                                Duplicate QC
                             </a>
                         </li>
                         
@@ -273,6 +285,20 @@
                                         </button>
                                     </li>
                                     <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="pra-cofo-tab" data-bs-toggle="tab"
+                                                data-bs-target="#pra-cofo-pane" type="button" role="tab">
+                                            <i class="fas fa-certificate me-1"></i>
+                                            CofO Preview (<span id="praCofoCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="pra-other-instruments-tab" data-bs-toggle="tab"
+                                                data-bs-target="#pra-other-instruments-pane" type="button" role="tab">
+                                            <i class="fas fa-file-signature me-1"></i>
+                                            Other Instruments (<span id="praOtherInstrumentCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
                                         <button class="nav-link" id="file-numbers-tab" data-bs-toggle="tab" 
                                                 data-bs-target="#file-numbers-pane" type="button" role="tab">
                                             <i class="fas fa-file-alt me-1"></i>
@@ -368,6 +394,65 @@
                                                 <tbody id="propertyRecordsTableBody">
                                                     <!-- Property records content will be inserted here -->
                                                 </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <!-- CofO Preview Tab -->
+                                    <div class="tab-pane fade" id="pra-cofo-pane" role="tabpanel">
+                                        <div class="alert alert-info d-none" id="praCofoEmpty">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            No CofO records detected for this upload.
+                                        </div>
+                                        <div class="table-responsive" id="praCofoTableWrapper" style="display:none;">
+                                            <table class="table table-striped table-hover text-nowrap" id="praCofoTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="60">#</th>
+                                                        <th>File Number</th>
+                                                        <th>Transaction Type</th>
+                                                        <th>Grantor</th>
+                                                        <th>Grantee</th>
+                                                        <th>Transaction Date</th>
+                                                        <th>Serial No</th>
+                                                        <th>Page No</th>
+                                                        <th>Volume No</th>
+                                                        <th>Reg No</th>
+                                                        <th>CofO Date</th>
+                                                        <th>Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="praCofoTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
+                                    <!-- Other Instruments Tab -->
+                                    <div class="tab-pane fade" id="pra-other-instruments-pane" role="tabpanel">
+                                        <div class="alert alert-info d-none" id="praOtherInstrumentsEmpty">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            No other instruments were identified in this upload.
+                                        </div>
+                                        <div class="table-responsive" id="praOtherInstrumentsTableWrapper" style="display:none;">
+                                            <table class="table table-striped table-hover text-nowrap" id="praOtherInstrumentsTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="60">#</th>
+                                                        <th>File Number</th>
+                                                        <th>Instrument Type</th>
+                                                        <th>Grantor</th>
+                                                        <th>Grantee</th>
+                                                        <th>Transaction Date</th>
+                                                        <th>Serial No</th>
+                                                        <th>Page No</th>
+                                                        <th>Volume No</th>
+                                                        <th>Reg No</th>
+                                                        <th>Plot No</th>
+                                                        <th>Location</th>
+                                                        <th>Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="praOtherInstrumentsTableBody"></tbody>
                                             </table>
                                         </div>
                                     </div>

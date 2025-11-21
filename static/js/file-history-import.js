@@ -163,6 +163,9 @@ class FileHistoryImportManager {
                     case '#history-cofo-pane':
                         this.handleTabChange('cofo');
                         break;
+                    case '#history-other-instruments-pane':
+                        this.handleTabChange('other-instruments');
+                        break;
                     case '#history-file-numbers-pane':
                         this.handleTabChange('file-numbers');
                         break;
@@ -624,6 +627,70 @@ class FileHistoryImportManager {
         this.setImportButtonState(0);
     }
 
+    getDecoratedCofoRows() {
+        // Only expose CofO rows that backend flagged as genuine CofO entries.
+        return this.cofoRecords
+            .map((record, index) => ({ record, index }))
+            .filter((item) => item.record && item.record.is_cofo_record);
+    }
+
+    getCofoDisplayCount() {
+        return this.getDecoratedCofoRows().length;
+    }
+
+    getOtherInstrumentRows() {
+        return this.propertyRecords
+            .map((record, index) => ({ record, index }))
+            .filter((item) => item.record && !this.isCofoRecord(item.record));
+    }
+
+    isCofoRecord(record) {
+        if (!record) {
+            return false;
+        }
+
+        if (typeof record.is_cofo_record === 'boolean') {
+            return record.is_cofo_record;
+        }
+
+        const transactionType = record.transaction_type ?? record.instrument_type ?? record.title_type;
+        return this.isCofoIndicator(transactionType);
+    }
+
+    isCofoIndicator(value) {
+        const normalized = this.normalizeInstrumentComparisonValue(value);
+        if (!normalized) {
+            return false;
+        }
+
+        if (normalized === 'cofo' || normalized === 'c of o') {
+            return true;
+        }
+
+        const collapsed = normalized.replace(/[^a-z0-9]/g, '');
+        if (collapsed === 'cofo' || collapsed === 'cfo' || collapsed === 'certificateofoccupancy') {
+            return true;
+        }
+
+        if (normalized.includes('certificate') && normalized.includes('occupancy')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    normalizeInstrumentComparisonValue(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+
+        return String(value)
+            .toLowerCase()
+            .replace(/[_\-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
     resetStagingDisplay() {
         this.updateElementText('historyStagingEntityCountDisplay', 0);
         this.updateElementText('historyStagingCustomerCountDisplay', 0);
@@ -660,12 +727,16 @@ class FileHistoryImportManager {
     clearTableBodies() {
         const recordsBody = document.getElementById('historyRecordsTableBody');
         const cofoBody = document.getElementById('historyCofoTableBody');
+        const otherBody = document.getElementById('historyOtherInstrumentsTableBody');
 
         if (recordsBody) {
             recordsBody.innerHTML = '';
         }
         if (cofoBody) {
             cofoBody.innerHTML = '';
+        }
+        if (otherBody) {
+            otherBody.innerHTML = '';
         }
     }
 
@@ -764,7 +835,8 @@ class FileHistoryImportManager {
 
     updateCounts() {
         this.updateElementText('historyRecordsCount', this.propertyRecords.length);
-        this.updateElementText('historyCofoCount', this.cofoRecords.length);
+        this.updateElementText('historyCofoCount', this.getCofoDisplayCount());
+        this.updateElementText('historyOtherInstrumentCount', this.getOtherInstrumentRows().length);
         this.updateFileNumberIssueCount();
         this.fileNumberSummary = this.buildFileNumberSummary();
         this.updateElementText('historyFileNumbersCount', this.fileNumberSummary.length);
@@ -789,13 +861,17 @@ class FileHistoryImportManager {
     setTableVisibility() {
         const recordsWrapper = document.getElementById('historyRecordsTableWrapper');
         const cofoWrapper = document.getElementById('historyCofoTableWrapper');
+        const otherWrapper = document.getElementById('historyOtherInstrumentsTableWrapper');
         const qcWrapper = document.getElementById('historyFileNumberQcWrapper');
 
         if (recordsWrapper) {
             recordsWrapper.style.display = this.propertyRecords.length ? 'block' : 'none';
         }
         if (cofoWrapper) {
-            cofoWrapper.style.display = this.cofoRecords.length ? 'block' : 'none';
+            cofoWrapper.style.display = this.getCofoDisplayCount() ? 'block' : 'none';
+        }
+        if (otherWrapper) {
+            otherWrapper.style.display = this.getOtherInstrumentRows().length ? 'block' : 'none';
         }
         if (qcWrapper) {
             if (this.currentTab === 'file-number-qc') {
@@ -869,13 +945,13 @@ class FileHistoryImportManager {
     }
 
     handleTabChange(tab) {
-        if (!['records', 'cofo', 'file-number-qc', 'file-numbers', 'entities', 'customers'].includes(tab)) {
+        if (!['records', 'cofo', 'other-instruments', 'file-number-qc', 'file-numbers', 'entities', 'customers'].includes(tab)) {
             return;
         }
 
         this.currentTab = tab;
         this.currentPage = 1;
-        const supportsFilter = tab === 'records' || tab === 'cofo';
+        const supportsFilter = tab === 'records' || tab === 'cofo' || tab === 'other-instruments';
         this.updateFilterButtons();
         this.toggleFilterControls(supportsFilter);
         this.setTableVisibility();
@@ -934,8 +1010,14 @@ class FileHistoryImportManager {
         if (this.currentTab === 'file-number-qc') {
             return;
         }
-        const sourceData = this.currentTab === 'records' ? this.propertyRecords : this.cofoRecords;
-        const decorated = sourceData.map((record, index) => ({ record, index }));
+        let decorated;
+        if (this.currentTab === 'records') {
+            decorated = this.propertyRecords.map((record, index) => ({ record, index }));
+        } else if (this.currentTab === 'cofo') {
+            decorated = this.getDecoratedCofoRows();
+        } else {
+            decorated = this.getOtherInstrumentRows();
+        }
 
         let filtered = decorated;
         if (this.currentFilter === 'issues') {
@@ -959,19 +1041,33 @@ class FileHistoryImportManager {
         if (this.currentTab === 'file-number-qc') {
             return;
         }
-        const bodyId = this.currentTab === 'records' ? 'historyRecordsTableBody' : 'historyCofoTableBody';
+        const bodyId = (
+            this.currentTab === 'records'
+                ? 'historyRecordsTableBody'
+                : this.currentTab === 'cofo'
+                    ? 'historyCofoTableBody'
+                    : 'historyOtherInstrumentsTableBody'
+        );
         const tableBody = document.getElementById(bodyId);
         if (!tableBody) {
             return;
         }
 
-        const sourceData = this.currentTab === 'records' ? this.propertyRecords : this.cofoRecords;
+        const sourceRows = this.currentTab === 'records'
+            ? this.propertyRecords.map((record, index) => ({ record, index }))
+            : this.currentTab === 'cofo'
+                ? this.getDecoratedCofoRows()
+                : this.getOtherInstrumentRows();
 
         tableBody.innerHTML = '';
 
         if (!this.filteredRows.length) {
-            const columnCount = this.currentTab === 'records' ? 16 : 14;
-            const message = sourceData.length
+            const columnCount = this.currentTab === 'records'
+                ? 16
+                : this.currentTab === 'cofo'
+                    ? 14
+                    : 15;
+            const message = sourceRows.length
                 ? 'No rows match the current filter.'
                 : 'Upload a file to preview records.';
             tableBody.innerHTML = `
@@ -990,9 +1086,14 @@ class FileHistoryImportManager {
 
         pageItems.forEach((item, offset) => {
             const displayIndex = startIndex + offset + 1;
-            const row = this.currentTab === 'records'
-                ? this.createPropertyRecordRow(item, displayIndex)
-                : this.createCofoRow(item, displayIndex);
+            let row;
+            if (this.currentTab === 'records') {
+                row = this.createPropertyRecordRow(item, displayIndex);
+            } else if (this.currentTab === 'cofo') {
+                row = this.createCofoRow(item, displayIndex);
+            } else {
+                row = this.createOtherInstrumentRow(item, displayIndex);
+            }
             tableBody.appendChild(row);
         });
 
@@ -1124,6 +1225,72 @@ class FileHistoryImportManager {
                 case 'editable':
                     td.textContent = config.value ?? '';
                     this.attachInlineEditing(td, 'cofo', index, config.field);
+                    break;
+                case 'status':
+                    td.innerHTML = config.html ?? '';
+                    break;
+                case 'actions':
+                    td.classList.add('text-center');
+                    this.appendDeleteButton(td, config.typeKey, config.rowIndex);
+                    break;
+                default:
+                    td.textContent = config.value ?? '';
+            }
+            tr.appendChild(td);
+        });
+
+        return tr;
+    }
+
+    createOtherInstrumentRow(item, displayIndex) {
+        const { record, index } = item;
+        const tr = document.createElement('tr');
+
+        if (record?.hasIssues) {
+            tr.classList.add('table-warning');
+        }
+
+        const fileNumber = this.sanitizeValue(record?.mlsFNo);
+        const propId = this.sanitizeValue(record?.prop_id) || '—';
+        const instrumentType = this.sanitizeValue(record?.instrument_type || record?.transaction_type);
+        const assignor = this.resolvePreferredValue(record?.Assignor, record?.Grantor, record?.grantor_assignor);
+        const assignee = this.resolvePreferredValue(record?.Assignee, record?.Grantee, record?.grantee_assignee);
+        const regDate = this.resolvePreferredValue(record?.reg_date, record?.reg_date_raw, record?.date_created);
+        const regTime = this.resolvePreferredValue(record?.reg_time, record?.reg_time_raw, record?.transaction_time);
+        const serialNo = this.sanitizeValue(record?.serialNo);
+        const pageNo = this.sanitizeValue(record?.pageNo);
+        const volumeNo = this.sanitizeValue(record?.volumeNo);
+        const regNo = this.sanitizeValue(record?.regNo);
+        const createdBy = this.resolvePreferredValue(record?.created_by, record?.CreatedBy);
+        const statusBadge = this.buildStatusBadge(record?.hasIssues);
+
+        const columnConfigs = [
+            { kind: 'text', value: displayIndex.toString() },
+            { kind: 'editable', field: 'mlsFNo', value: fileNumber },
+            { kind: 'text', value: propId },
+            { kind: 'editable', field: 'transaction_type', value: instrumentType },
+            { kind: 'editable', field: 'Assignor', value: assignor },
+            { kind: 'editable', field: 'Assignee', value: assignee },
+            { kind: 'editable', field: 'reg_date', value: regDate },
+            { kind: 'editable', field: 'reg_time', value: regTime },
+            { kind: 'editable', field: 'serialNo', value: serialNo },
+            { kind: 'editable', field: 'pageNo', value: pageNo },
+            { kind: 'editable', field: 'volumeNo', value: volumeNo },
+            { kind: 'editable', field: 'regNo', value: regNo },
+            { kind: 'editable', field: 'created_by', value: createdBy },
+            { kind: 'status', html: statusBadge },
+            { kind: 'actions', typeKey: 'records', rowIndex: index }
+        ];
+
+        columnConfigs.forEach((config) => {
+            const td = document.createElement('td');
+            switch (config.kind) {
+                case 'text':
+                    td.textContent = config.value ?? '';
+                    break;
+                case 'editable':
+                    td.textContent = config.value ?? '';
+                    this.attachInlineEditing(td, 'records', index, config.field);
                     break;
                 case 'status':
                     td.innerHTML = config.html ?? '';
@@ -1621,6 +1788,9 @@ class FileHistoryImportManager {
         });
 
         this.cofoRecords.forEach((record) => {
+            if (!record || !record.is_cofo_record) {
+                return;
+            }
             const entry = ensureEntry(record?.mlsFNo || record?.file_number || record?.fileno);
             entry.cofoCount += 1;
 

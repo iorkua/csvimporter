@@ -29,6 +29,12 @@
                             </a>
                         </li>
                         <li class="nav-item">
+                            <a class="nav-link text-light" href="/file-number-import">
+                                <i class="fas fa-book me-2"></i>
+                                FileNO Imports
+                            </a>
+                        </li>
+                        <li class="nav-item">
                             <a class="nav-link text-light" href="/file-indexing">
                                 <i class="fas fa-folder-open me-2"></i>
                                 File Indexing
@@ -50,6 +56,12 @@
                             <a class="nav-link active text-white" href="/pic">
                                 <i class="fas fa-id-card me-2"></i>
                                 PIC
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link text-light" href="/duplicate-qc">
+                                <i class="fas fa-clone me-2"></i>
+                                Duplicate QC
                             </a>
                         </li>
 
@@ -88,6 +100,12 @@
                         Property Index Card Import
                     </h1>
                     <div class="btn-toolbar mb-2 mb-md-0">
+                        <div class="btn-group me-2">
+                            <button type="button" class="btn btn-sm btn-success" id="exportPicCsvBtn" disabled>
+                                <i class="fas fa-file-download me-1"></i>
+                                Export to CSV
+                            </button>
+                        </div>
                         <button type="button" class="btn btn-sm btn-primary" id="importPicBtn" disabled>
                             <i class="fas fa-upload me-1"></i>
                             Import PIC Data
@@ -161,7 +179,8 @@
                             <div class="card-body">
                                 <ul class="list-unstyled mb-0 small">
                                     <li>• MLSFileNo</li>
-                                    <li>• SerialNo / serialNo</li>
+                                    <li>• serialNo (Register Serial)</li>
+                                    <li>• OldKNNo (Old KN Number)</li>
                                     <li>• Transaction Type</li>
                                     <li>• Grantor / Grantee / Assignee</li>
                                     <li>• Property Description</li>
@@ -239,6 +258,12 @@
                                         </button>
                                     </li>
                                     <li class="nav-item" role="presentation">
+                                        <button class="nav-link" id="pic-other-instruments-tab" data-bs-toggle="tab" data-bs-target="#pic-other-instruments-pane" type="button" role="tab">
+                                            <i class="fas fa-scroll me-1"></i>
+                                            Other Instruments (<span id="picOtherInstrumentCount">0</span>)
+                                        </button>
+                                    </li>
+                                    <li class="nav-item" role="presentation">
                                         <button class="nav-link" id="pic-file-numbers-tab" data-bs-toggle="tab" data-bs-target="#pic-file-numbers-pane" type="button" role="tab">
                                             <i class="fas fa-folder me-1"></i>
                                             File Numbers (<span id="picFileNumberCount">0</span>)
@@ -295,6 +320,10 @@
                                     </div>
 
                                     <div class="tab-pane fade" id="pic-cofo-pane" role="tabpanel">
+                                        <div class="alert alert-info d-none small" id="picCofoFilterNotice">
+                                            <i class="fas fa-filter me-1"></i>
+                                            Showing only rows with Transaction Type <strong>COFO</strong> or <strong>Certificate of Occupancy</strong>.
+                                        </div>
                                         <div class="table-responsive" style="display:none;" id="picCofoTableWrapper">
                                             <table class="table table-striped table-hover table-sm align-middle preview-table" id="picCofoTable">
                                                 <thead class="sticky-top">
@@ -320,6 +349,33 @@
                                         </div>
                                     </div>
 
+                                    <div class="tab-pane fade" id="pic-other-instruments-pane" role="tabpanel">
+                                        <div class="table-responsive" style="display:none;" id="picOtherInstrumentsTableWrapper">
+                                            <table class="table table-striped table-hover table-sm align-middle preview-table text-nowrap" id="picOtherInstrumentsTable">
+                                                <thead class="table-dark sticky-top">
+                                                    <tr>
+                                                        <th width="50">#</th>
+                                                        <th>File Number</th>
+                                                        <th class="text-nowrap">Prop ID</th>
+                                                        <th class="text-nowrap">Instrument Type</th>
+                                                        <th class="text-nowrap">Grantor</th>
+                                                        <th class="text-nowrap">Grantee</th>
+                                                        <th class="text-nowrap">Reg Date</th>
+                                                        <th class="text-nowrap">Serial No</th>
+                                                        <th class="text-nowrap">Page No</th>
+                                                        <th class="text-nowrap">Vol No</th>
+                                                        <th class="text-nowrap">Reg No</th>
+                                                        <th class="text-nowrap">Comments</th>
+                                                        <th class="text-nowrap">Created By</th>
+                                                        <th>Status</th>
+                                                        <th width="120" class="text-center">Delete</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="picOtherInstrumentsTableBody"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+
                                     <div class="tab-pane fade" id="pic-file-numbers-pane" role="tabpanel">
                                         <div class="table-responsive" style="display:none;" id="picFileNumbersTableWrapper">
                                             <table class="table table-striped table-hover table-sm align-middle preview-table" id="picFileNumbersTable">
@@ -328,9 +384,8 @@
                                                         <th width="50">#</th>
                                                         <th>File Number</th>
                                                         <th>Tracking ID</th>
-                                                        <th>File Name</th>
+                                                        <th>Grantee</th>
                                                         <th>Location</th>
-                                                        <th>MLSFIleNO</th>
                                                         <th>Source</th>
                                                         <th>Plot No</th>
                                                         <th>Created By</th>
@@ -373,6 +428,10 @@
                                     </div>
 
                                     <div class="tab-pane fade" id="pic-entities-pane" role="tabpanel">
+                                        <div class="alert alert-info small mb-3">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            <strong>Note:</strong> Records where the Grantee matches a file number pattern (e.g., CON-2004-56, RES-RC-1988-68) are automatically excluded from entities. Only actual person or company names are shown here.
+                                        </div>
                                         <div class="table-responsive" style="display:none;" id="picEntitiesTableWrapper">
                                             <table class="table table-striped table-hover text-nowrap" id="picEntitiesTable">
                                                 <thead class="table-dark sticky-top">
@@ -391,6 +450,10 @@
                                     </div>
 
                                     <div class="tab-pane fade" id="pic-customers-pane" role="tabpanel">
+                                        <div class="alert alert-info small mb-3">
+                                            <i class="fas fa-info-circle me-2"></i>
+                                            <strong>Note:</strong> Records where the Grantee matches a file number pattern (e.g., CON-2004-56, RES-RC-1988-68) are automatically excluded from customers. Only actual person or company names are shown here.
+                                        </div>
                                         <div class="table-responsive" style="display:none;" id="picCustomersTableWrapper">
                                             <table class="table table-striped table-hover text-nowrap" id="picCustomersTable">
                                                 <thead class="table-dark sticky-top">
@@ -508,6 +571,6 @@
         </div>
     </div>
 
-    <script src="/static/js/property-index-card.js?v=20251105-2"></script>
+    <script src="/static/js/property-index-card.js?v=20251124-3"></script>
 </body>
 </html>

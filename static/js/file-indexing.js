@@ -37,6 +37,8 @@ class FileIndexingManager {
         this.isClearingMode = false;
         this.propIdHeader = document.getElementById('propIdHeader');
         this.shouldShowPropIdColumn = false;
+        this.originalTotalRecords = 0;
+        this.suppressedExistingRecords = [];
         
         this.initializeEventListeners();
         this.initializePaginationControls();
@@ -346,7 +348,22 @@ class FileIndexingManager {
             // Load preview data
             await this.loadPreviewData();
             
-            this.showNotification(`File uploaded successfully! ${result.total_records} records found.`, 'success');
+            const uploadedCount = typeof result.original_total_records === 'number'
+                ? result.original_total_records
+                : (result.total_records ?? 0);
+            const suppressedCount = typeof result.suppressed_existing_count === 'number'
+                ? result.suppressed_existing_count
+                : 0;
+            const visibleCount = result.total_records ?? 0;
+            let successMessage = `File uploaded successfully! ${uploadedCount} records processed.`;
+            if (suppressedCount > 0) {
+                const suffix = suppressedCount === 1 ? 'record' : 'records';
+                successMessage += ` ${suppressedCount} existing ${suffix} hidden from preview.`;
+            } else {
+                successMessage += ` ${visibleCount} ready for review.`;
+            }
+
+            this.showNotification(successMessage, 'success');
             
         } catch (error) {
             console.error('Upload error:', error);
@@ -369,7 +386,13 @@ class FileIndexingManager {
             
             const result = await response.json();
             this.currentData = result.data;
-            this.multipleOccurrences = result.multiple_occurrences;
+            this.originalTotalRecords = typeof result.original_total_records === 'number'
+                ? result.original_total_records
+                : (Array.isArray(result.data) ? result.data.length : 0);
+            this.suppressedExistingRecords = Array.isArray(result.suppressed_existing_records)
+                ? result.suppressed_existing_records
+                : [];
+            this.multipleOccurrences = result.multiple_occurrences || {};
             this.groupingPreview = result.grouping_preview || { rows: [], summary: {} };
 
             if (result.test_control) {
@@ -408,9 +431,87 @@ class FileIndexingManager {
     }
     
     updateStatistics(data) {
-        document.getElementById('total-records').textContent = data.total_records || 0;
-        document.getElementById('multiple-occurrences').textContent = Object.keys(data.multiple_occurrences || {}).length;
-        document.getElementById('valid-records').textContent = (data.total_records || 0) - Object.keys(data.multiple_occurrences || {}).length;
+        const totalRecords = typeof data.total_records === 'number'
+            ? data.total_records
+            : (Array.isArray(this.currentData) ? this.currentData.length : 0);
+
+        if (typeof data.original_total_records === 'number') {
+            this.originalTotalRecords = data.original_total_records;
+        }
+
+        const originalTotal = this.originalTotalRecords || totalRecords;
+        const multipleMap = data.multiple_occurrences || this.multipleOccurrences || {};
+        const duplicatesCount = Object.keys(multipleMap).length;
+        let suppressedCount;
+
+        if (typeof data.suppressed_existing_count === 'number') {
+            suppressedCount = data.suppressed_existing_count;
+        } else if (Array.isArray(this.suppressedExistingRecords)) {
+            suppressedCount = this.suppressedExistingRecords.length;
+        } else {
+            suppressedCount = 0;
+        }
+
+        const totalRecordsEl = document.getElementById('total-records');
+        if (totalRecordsEl) {
+            totalRecordsEl.textContent = originalTotal;
+        }
+
+        const duplicatesEl = document.getElementById('multiple-occurrences');
+        if (duplicatesEl) {
+            duplicatesEl.textContent = duplicatesCount;
+        }
+
+        const validEl = document.getElementById('valid-records');
+        if (validEl) {
+            const validCount = Math.max(totalRecords - duplicatesCount, 0);
+            validEl.textContent = validCount;
+        }
+
+        this.renderSuppressedAlert(suppressedCount);
+    }
+
+    renderSuppressedAlert(count) {
+        const alertEl = document.getElementById('suppressedExistingAlert');
+        const messageEl = document.getElementById('suppressedExistingMessage');
+
+        if (!alertEl || !messageEl) {
+            return;
+        }
+
+        if (!count) {
+            alertEl.classList.add('d-none');
+            messageEl.textContent = '';
+            return;
+        }
+
+        const suffix = count === 1 ? 'record' : 'records';
+        const sampleSummaries = Array.isArray(this.suppressedExistingRecords)
+            ? this.suppressedExistingRecords
+                .slice(0, 3)
+                .map((entry) => {
+                    if (!entry || !entry.file_number) {
+                        return '';
+                    }
+                    const numberValue = String(entry.file_number);
+                    const sources = Array.isArray(entry.sources) && entry.sources.length
+                        ? ` (${entry.sources.join(', ')})`
+                        : '';
+                    return `${numberValue}${sources}`;
+                })
+                .filter((value) => value)
+            : [];
+
+        let details = '';
+        if (sampleSummaries.length) {
+            const joined = sampleSummaries.join(', ');
+            const needsEllipsis = Array.isArray(this.suppressedExistingRecords)
+                && this.suppressedExistingRecords.length > sampleSummaries.length;
+            details = ` Example: ${joined}${needsEllipsis ? '...' : ''}`;
+        }
+
+        messageEl.textContent = `${count} ${suffix} already exist in staging tables and were hidden from this preview.${details}`;
+        alertEl.classList.remove('d-none');
     }
     
     renderGroupingPreview() {
@@ -497,8 +598,6 @@ class FileIndexingManager {
 
             const registryMarkup = displayOrDash(row.registry);
 
-            const registryBatchMarkup = displayOrDash(row.registry_batch_no);
-
             const mdcBatchParts = [];
             const mdcBatchValue = row.mdc_batch_no;
             const csvBatchValue = row.csv_batch_no;
@@ -526,11 +625,11 @@ class FileIndexingManager {
                 </td>
                 <td>${notesContent}</td>
                 <td>${displayOrDash(row.sys_batch_no)}</td>
+                <td>${displayOrDash(row.registry_batch_no)}</td>
                 <td>${mdcBatchMarkup}</td>
+                <td>${registryMarkup}</td>
                 <td>${displayOrDash(row.group)}</td>
                 <td>${displayOrDash(row.grouping_number)}</td>
-                <td>${registryMarkup}</td>
-                <td>${displayOrDash(row.registry_batch_no)}</td>
                 <td>${this.getGroupingStatusBadge(status)}</td>
             `;
 
@@ -1193,9 +1292,13 @@ class FileIndexingManager {
             }
 
             this.renderPreviewTable();
-            this.updateStatistics({ 
+            this.updateStatistics({
                 total_records: this.currentData.length,
-                multiple_occurrences: this.multipleOccurrences 
+                multiple_occurrences: this.multipleOccurrences,
+                original_total_records: this.originalTotalRecords,
+                suppressed_existing_count: Array.isArray(this.suppressedExistingRecords)
+                    ? this.suppressedExistingRecords.length
+                    : 0
             });
         }
     }

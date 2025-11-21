@@ -103,8 +103,11 @@ class FileNumber(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     mlsf_no = Column('mlsfNo', String(100), unique=True)
     file_name = Column('FileName', String(500))
+    kangis_file_no = Column('kangisFileNo', String(100))
+    new_kangis_file_no = Column('NewKANGISFileNo', String(100))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True)
+    date_migrated = Column('date_migrated', DateTime, nullable=True)
     location = Column(String(500))
     created_by = Column(String(255))
     updated_by = Column(String(255), nullable=True)
@@ -113,6 +116,9 @@ class FileNumber(Base):
     plot_no = Column('plot_no', String(100))
     tp_no = Column('tp_no', String(100))
     tracking_id = Column('tracking_id', String(50))
+    migration_source = Column('migration_source', String(100))
+    migrated_by = Column('migrated_by', String(50))
+    is_deleted = Column('is_deleted', Boolean, default=False)
     test_control = Column('test_control', String(20), default='PRODUCTION')
 
 

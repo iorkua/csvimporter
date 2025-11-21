@@ -28,6 +28,7 @@ class PropertyIndexCardImportManager {
         this.currentFilter = 'all';
         this.currentPage = 1;
         this.itemsPerPage = 20;
+        this.baseRowCount = 0;
         this.sessionId = null;
         this.qcIssues = {};
         this.testControlMode = '';
@@ -43,6 +44,11 @@ class PropertyIndexCardImportManager {
         this.fileNumberIssueTypes = [...PIC_FILE_NUMBER_ISSUE_TYPES];
         this.categoryConfig = {};
         this.categoryOrder = [];
+        this.typeBadgeClassMap = {
+            Corporate: 'badge bg-primary',
+            Multiple: 'badge bg-warning text-dark',
+            Individual: 'badge bg-secondary'
+        };
 
         PIC_QC_CATEGORY_CONFIG.forEach((config) => {
             this.categoryConfig[config.key] = { ...config };
@@ -51,6 +57,7 @@ class PropertyIndexCardImportManager {
 
         this.uploadForm = document.getElementById('picUploadForm');
         this.importButton = document.getElementById('importPicBtn');
+        this.exportCsvButton = document.getElementById('exportPicCsvBtn');
         this.testControlSelect = document.getElementById('picTestControlSelect');
         this.clearModeBtn = document.getElementById('picClearModeBtn');
         this.confirmClearDataBtn = document.getElementById('picConfirmClearDataBtn');
@@ -75,6 +82,25 @@ class PropertyIndexCardImportManager {
         this.updateFileNumberFixAllState();
         this.updateShowingInfo(0);
         this.renderPagination();
+    }
+
+    renderTypeBadge(type, label) {
+        const normalizedType = (type || '').toString().trim();
+        if (!normalizedType) {
+            return '';
+        }
+        const badgeClass = this.typeBadgeClassMap[normalizedType] || 'badge bg-secondary';
+        const content = this.escapeHtml(label ?? normalizedType);
+        return `<span class="${badgeClass}">${content}</span>`;
+    }
+
+    renderEntityBadge(displayValue, type) {
+        const display = this.escapeHtml(displayValue ?? '');
+        if (!display) {
+            return '<span class="text-muted">—</span>';
+        }
+        const badge = type ? this.renderTypeBadge(type) : '';
+        return badge ? `${display} <span class="ms-1">${badge}</span>` : display;
     }
 
     registerEventHandlers() {
@@ -137,6 +163,9 @@ class PropertyIndexCardImportManager {
                     case '#pic-cofo-pane':
                         this.handleTabChange('cofo');
                         break;
+                    case '#pic-other-instruments-pane':
+                        this.handleTabChange('other-instruments');
+                        break;
                     case '#pic-file-numbers-pane':
                         this.handleTabChange('file-numbers');
                         break;
@@ -157,6 +186,10 @@ class PropertyIndexCardImportManager {
 
         if (this.importButton) {
             this.importButton.addEventListener('click', () => this.importData());
+        }
+
+        if (this.exportCsvButton) {
+            this.exportCsvButton.addEventListener('click', () => this.exportToCSV());
         }
 
         const pagination = document.getElementById('picPagination');
@@ -371,6 +404,7 @@ class PropertyIndexCardImportManager {
         this.currentTab = 'records';
         this.currentFilter = 'all';
         this.currentPage = 1;
+        this.baseRowCount = 0;
 
         this.updateFilterButtons();
         this.clearTableBodies();
@@ -405,6 +439,7 @@ class PropertyIndexCardImportManager {
     clearTableBodies() {
         const recordsBody = document.getElementById('picRecordsTableBody');
         const cofoBody = document.getElementById('picCofoTableBody');
+        const otherBody = document.getElementById('picOtherInstrumentsTableBody');
         const fileNumbersBody = document.getElementById('picFileNumbersTableBody');
         const qcBody = document.getElementById('picFileNumberQcBody');
         const entitiesBody = document.getElementById('picEntitiesTableBody');
@@ -415,6 +450,9 @@ class PropertyIndexCardImportManager {
         }
         if (cofoBody) {
             cofoBody.innerHTML = '';
+        }
+        if (otherBody) {
+            otherBody.innerHTML = '';
         }
         if (fileNumbersBody) {
             fileNumbersBody.innerHTML = '';
@@ -508,7 +546,8 @@ class PropertyIndexCardImportManager {
 
     updateCounts() {
         this.updateElementText('picRecordsCount', this.propertyRecords.length);
-        this.updateElementText('picCofoCount', this.cofoRecords.length);
+        this.updateElementText('picCofoCount', this.countVisibleCofoRecords());
+        this.updateElementText('picOtherInstrumentCount', this.countOtherInstrumentRecords());
         this.updateElementText('picFileNumberCount', this.fileNumberRecords.length);
         this.updateFileNumberIssueCount();
     }
@@ -524,6 +563,47 @@ class PropertyIndexCardImportManager {
 
         this.renderEntitiesTable();
         this.renderCustomersTable();
+    }
+
+    getCofoDecoratedRecords() {
+        if (!Array.isArray(this.cofoRecords)) {
+            return [];
+        }
+        return this.cofoRecords
+            .map((record, index) => ({ record, index }))
+            .filter((item) => item.record?.is_valid_cofo_transaction === true);
+    }
+
+    getOtherInstrumentDecoratedRecords() {
+        if (!Array.isArray(this.propertyRecords)) {
+            return [];
+        }
+        return this.propertyRecords
+            .map((record, index) => ({ record, index }))
+            .filter((item) => !this.isCofoRecord(item.record));
+    }
+
+    isCofoRecord(record) {
+        if (!record) {
+            return false;
+        }
+        if (typeof record.is_valid_cofo_transaction === 'boolean') {
+            return record.is_valid_cofo_transaction;
+        }
+        const transactionType = this.sanitizeValue(record.transaction_type);
+        if (!transactionType) {
+            return false;
+        }
+        const normalized = transactionType.toLowerCase();
+        return normalized === 'cofo' || normalized === 'certificate of occupancy';
+    }
+
+    countVisibleCofoRecords() {
+        return this.getCofoDecoratedRecords().length;
+    }
+
+    countOtherInstrumentRecords() {
+        return this.getOtherInstrumentDecoratedRecords().length;
     }
 
     updateElementText(id, value) {
@@ -544,15 +624,34 @@ class PropertyIndexCardImportManager {
     setTableVisibility() {
         const recordsWrapper = document.getElementById('picRecordsTableWrapper');
         const cofoWrapper = document.getElementById('picCofoTableWrapper');
+        const otherWrapper = document.getElementById('picOtherInstrumentsTableWrapper');
         const fileNumbersWrapper = document.getElementById('picFileNumbersTableWrapper');
         const qcWrapper = document.getElementById('picFileNumberQcWrapper');
         const qcEmpty = document.getElementById('picFileNumberQcEmpty');
+        const cofoNotice = document.getElementById('picCofoFilterNotice');
 
         if (recordsWrapper) {
             recordsWrapper.style.display = this.propertyRecords.length ? 'block' : 'none';
         }
         if (cofoWrapper) {
-            cofoWrapper.style.display = this.cofoRecords.length ? 'block' : 'none';
+            const hasAnyCofoRows = Array.isArray(this.cofoRecords) && this.cofoRecords.length > 0;
+            cofoWrapper.style.display = hasAnyCofoRows ? 'block' : 'none';
+            if (cofoNotice) {
+                cofoNotice.classList.toggle('d-none', !hasAnyCofoRows);
+                const visibleCofo = this.countVisibleCofoRecords();
+                cofoNotice.classList.toggle('alert-warning', hasAnyCofoRows && visibleCofo === 0);
+                cofoNotice.classList.toggle('alert-info', !(hasAnyCofoRows && visibleCofo === 0));
+                if (hasAnyCofoRows && visibleCofo === 0) {
+                    cofoNotice.innerHTML = '<i class="fas fa-exclamation-triangle me-1"></i>No CofO transactions detected. Only rows with Transaction Type <strong>COFO</strong> or <strong>Certificate of Occupancy</strong> appear here.';
+                } else {
+                    cofoNotice.innerHTML = '<i class="fas fa-filter me-1"></i>Showing only rows with Transaction Type <strong>COFO</strong> or <strong>Certificate of Occupancy</strong>.';
+                }
+            }
+        } else if (cofoNotice) {
+            cofoNotice.classList.add('d-none');
+        }
+        if (otherWrapper) {
+            otherWrapper.style.display = this.countOtherInstrumentRecords() ? 'block' : 'none';
         }
         if (fileNumbersWrapper) {
             fileNumbersWrapper.style.display = this.fileNumberRecords.length ? 'block' : 'none';
@@ -616,6 +715,11 @@ class PropertyIndexCardImportManager {
             const readyCount = Number(this.importButton.dataset.readyCount || 0);
             const canImport = modeSelected && Boolean(this.sessionId) && readyCount > 0;
             this.importButton.disabled = !canImport;
+        }
+
+        if (this.exportCsvButton) {
+            const hasData = Boolean(this.sessionId) && this.propertyRecords.length > 0;
+            this.exportCsvButton.disabled = !hasData;
         }
 
         if (this.testControlSelect && modeSelected) {
@@ -758,34 +862,67 @@ class PropertyIndexCardImportManager {
     }
 
     handleTabChange(tab) {
-        if (!['records', 'cofo', 'file-numbers', 'file-number-qc', 'entities', 'customers'].includes(tab)) {
+        const allowedTabs = [
+            'records',
+            'cofo',
+            'other-instruments',
+            'file-numbers',
+            'file-number-qc',
+            'entities',
+            'customers'
+        ];
+
+        if (!allowedTabs.includes(tab)) {
             return;
         }
+
+        const pagination = document.getElementById('picPagination');
 
         this.currentTab = tab;
         this.setTableVisibility();
         this.renderEntitiesTable();
         this.renderCustomersTable();
 
-        if (tab === 'entities' || tab === 'customers') {
+        if (tab === 'entities') {
             this.toggleFilterControls(false);
-            return;
-        }
-
-        this.currentPage = 1;
-        this.toggleFilterControls(tab !== 'file-number-qc');
-        this.updateFileNumberFixAllState();
-
-        if (tab === 'file-number-qc') {
-            this.renderFileNumberQcTable();
-            this.updateShowingInfoForQc(this.countFileNumberIssues());
-            const pagination = document.getElementById('picPagination');
+            this.updateShowingInfoForList(this.entityStagingRecords.length);
             if (pagination) {
                 pagination.innerHTML = '';
             }
             return;
         }
 
+        if (tab === 'customers') {
+            this.toggleFilterControls(false);
+            this.updateShowingInfoForList(this.customerStagingRecords.length);
+            if (pagination) {
+                pagination.innerHTML = '';
+            }
+            return;
+        }
+
+        if (tab === 'file-number-qc') {
+            this.toggleFilterControls(false);
+            this.updateFileNumberFixAllState();
+            this.renderFileNumberQcTable();
+            this.updateShowingInfoForQc(this.countFileNumberIssues());
+            if (pagination) {
+                pagination.innerHTML = '';
+            }
+            return;
+        }
+
+        if (tab === 'file-numbers') {
+            this.currentPage = 1;
+            this.toggleFilterControls(true);
+            this.updateFileNumberFixAllState();
+            this.applyFilter();
+            return;
+        }
+
+        this.currentPage = 1;
+        this.toggleFilterControls(true);
+        this.updateFileNumberFixAllState();
         this.applyFilter();
     }
 
@@ -794,15 +931,18 @@ class PropertyIndexCardImportManager {
             return;
         }
 
-        let sourceData = [];
+        let decorated = [];
         if (this.currentTab === 'records') {
-            sourceData = this.propertyRecords;
+            decorated = this.propertyRecords.map((record, index) => ({ record, index }));
         } else if (this.currentTab === 'cofo') {
-            sourceData = this.cofoRecords;
+            decorated = this.getCofoDecoratedRecords();
+        } else if (this.currentTab === 'other-instruments') {
+            decorated = this.getOtherInstrumentDecoratedRecords();
         } else if (this.currentTab === 'file-numbers') {
-            sourceData = this.fileNumberRecords;
+            decorated = this.fileNumberRecords.map((record, index) => ({ record, index }));
         }
-        const decorated = sourceData.map((record, index) => ({ record, index }));
+
+        this.baseRowCount = decorated.length;
 
         let filtered = decorated;
         if (this.currentFilter === 'issues') {
@@ -830,6 +970,8 @@ class PropertyIndexCardImportManager {
         let bodyId = 'picRecordsTableBody';
         if (this.currentTab === 'cofo') {
             bodyId = 'picCofoTableBody';
+        } else if (this.currentTab === 'other-instruments') {
+            bodyId = 'picOtherInstrumentsTableBody';
         } else if (this.currentTab === 'file-numbers') {
             bodyId = 'picFileNumbersTableBody';
         }
@@ -838,24 +980,30 @@ class PropertyIndexCardImportManager {
             return;
         }
 
-        let sourceData = this.propertyRecords;
-        if (this.currentTab === 'cofo') {
-            sourceData = this.cofoRecords;
-        } else if (this.currentTab === 'file-numbers') {
-            sourceData = this.fileNumberRecords;
-        }
         tableBody.innerHTML = '';
 
         if (!this.filteredRows.length) {
             let columnCount = 16;
             if (this.currentTab === 'cofo') {
                 columnCount = 14;
+            } else if (this.currentTab === 'other-instruments') {
+                columnCount = 15;
             } else if (this.currentTab === 'file-numbers') {
-                columnCount = 11;
+                columnCount = 10;
             }
-            const message = sourceData.length
-                ? 'No rows match the current filter.'
-                : 'Upload a file to preview records.';
+            let message;
+            if (this.currentTab === 'cofo') {
+                const totalCofoRows = Array.isArray(this.cofoRecords) ? this.cofoRecords.length : 0;
+                if (totalCofoRows > 0) {
+                    message = 'No CofO transactions detected. Only rows with Transaction Type "COFO" or "Certificate of Occupancy" appear here.';
+                } else {
+                    message = 'Upload a file to preview records.';
+                }
+            } else {
+                message = this.baseRowCount
+                    ? 'No rows match the current filter.'
+                    : 'Upload a file to preview records.';
+            }
             tableBody.innerHTML = `
                 <tr>
                     <td colspan="${columnCount}" class="text-center text-muted py-4">
@@ -872,11 +1020,16 @@ class PropertyIndexCardImportManager {
 
         pageItems.forEach((item, offset) => {
             const displayIndex = startIndex + offset + 1;
-            const row = this.currentTab === 'records'
-                ? this.createPropertyRecordRow(item, displayIndex)
-                : this.currentTab === 'cofo'
-                    ? this.createCofoRow(item, displayIndex)
-                    : this.createFileNumberRow(item, displayIndex);
+            let row;
+            if (this.currentTab === 'records') {
+                row = this.createPropertyRecordRow(item, displayIndex);
+            } else if (this.currentTab === 'cofo') {
+                row = this.createCofoRow(item, displayIndex);
+            } else if (this.currentTab === 'other-instruments') {
+                row = this.createOtherInstrumentRow(item, displayIndex);
+            } else {
+                row = this.createFileNumberRow(item, displayIndex);
+            }
             tableBody.appendChild(row);
         });
 
@@ -1015,7 +1168,7 @@ class PropertyIndexCardImportManager {
                 <td>${index + 1}</td>
                 <td>${entityId ? `<code>${this.escapeHtml(entityId)}</code>` : '<span class="text-muted">—</span>'}</td>
                 <td>${fileNumber ? `<code>${this.escapeHtml(fileNumber)}</code>` : '<span class="text-muted">—</span>'}</td>
-                <td>${entityType ? `<span class="badge bg-secondary">${this.escapeHtml(entityType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${entityType ? this.renderTypeBadge(entityType) : '<span class="text-muted">—</span>'}</td>
                 <td>${entityName ? this.escapeHtml(entityName) : '<span class="text-muted">—</span>'}</td>
                 <td><span class="${statusClass}">${this.escapeHtml(status)}</span></td>
             `;
@@ -1088,7 +1241,7 @@ class PropertyIndexCardImportManager {
                 <td>${accountNo ? `<code>${this.escapeHtml(accountNo)}</code>` : '<span class="text-muted">—</span>'}</td>
                 <td>${customerCode ? `<code>${this.escapeHtml(customerCode)}</code>` : '<span class="text-muted">—</span>'}</td>
                 <td>${customerName ? this.escapeHtml(customerName) : '<span class="text-muted">—</span>'}</td>
-                <td>${customerType ? `<span class="badge bg-secondary">${this.escapeHtml(customerType)}</span>` : '<span class="text-muted">—</span>'}</td>
+                <td>${customerType ? this.renderTypeBadge(customerType) : '<span class="text-muted">—</span>'}</td>
                 <td>${reasonByCell}</td>
                 <td>${reasonRetiredCell}</td>
                 <td>${emailCell}</td>
@@ -1129,7 +1282,7 @@ class PropertyIndexCardImportManager {
         const volumeNo = this.sanitizeValue(record?.volumeNo);
         const comments = this.sanitizeValue(record?.comments);
         const remarks = this.sanitizeValue(record?.remarks);
-    const statusBadge = this.buildStatusBadge(record);
+        const statusBadge = this.buildStatusBadge(record);
 
         const columnConfigs = [
             { kind: 'text', value: displayIndex.toString() },
@@ -1150,14 +1303,21 @@ class PropertyIndexCardImportManager {
             { kind: 'actions', typeKey: 'records', rowIndex: index }
         ];
 
-    columnConfigs.forEach((config) => {
+        columnConfigs.forEach((config) => {
             const td = document.createElement('td');
             switch (config.kind) {
                 case 'text':
                     td.textContent = config.value ?? '';
                     break;
                 case 'editable':
-                    td.textContent = config.value ?? '';
+                    td.dataset.rawValue = config.value ?? '';
+                    if (config.badgeType) {
+                        td.dataset.badgeType = config.badgeType;
+                        td.innerHTML = this.renderEntityBadge(config.value, config.badgeType);
+                    } else {
+                        delete td.dataset.badgeType;
+                        td.textContent = config.value ?? '';
+                    }
                     if (config.field === 'location' && propertyDescription && locationValue) {
                         td.title = this.escapeHtml(locationValue);
                     } else if (config.field === 'location') {
@@ -1203,7 +1363,7 @@ class PropertyIndexCardImportManager {
         const pageNo = this.sanitizeValue(record?.pageNo);
         const volumeNo = this.sanitizeValue(record?.volumeNo);
         const regNo = this.sanitizeValue(record?.regNo);
-    const statusBadge = this.buildStatusBadge(record);
+        const statusBadge = this.buildStatusBadge(record);
         const propId = this.sanitizeValue(record?.prop_id);
 
         const columnConfigs = [
@@ -1230,8 +1390,97 @@ class PropertyIndexCardImportManager {
                     td.textContent = config.value ?? '';
                     break;
                 case 'editable':
-                    td.textContent = config.value ?? '';
+                    td.dataset.rawValue = config.value ?? '';
+                    if (config.badgeType) {
+                        td.dataset.badgeType = config.badgeType;
+                        td.innerHTML = this.renderEntityBadge(config.value, config.badgeType);
+                    } else {
+                        delete td.dataset.badgeType;
+                        td.textContent = config.value ?? '';
+                    }
                     this.attachInlineEditing(td, 'cofo', index, config.field);
+                    break;
+                case 'prop-id':
+                    td.classList.add('text-nowrap');
+                    this.renderPropIdCell(td, config.value, config.source);
+                    break;
+                case 'status':
+                    td.innerHTML = config.html ?? '';
+                    break;
+                case 'actions':
+                    td.classList.add('text-center');
+                    this.appendDeleteButton(td, config.typeKey, config.rowIndex);
+                    break;
+                default:
+                    td.textContent = config.value ?? '';
+            }
+            tr.appendChild(td);
+        });
+
+        return tr;
+    }
+
+    createOtherInstrumentRow(item, displayIndex) {
+        const { record, index } = item;
+        const tr = document.createElement('tr');
+
+        if (record?.hasIssues) {
+            tr.classList.add('table-warning');
+        }
+
+        const fileNumber = this.sanitizeValue(record?.mlsFNo);
+        const propId = this.sanitizeValue(record?.prop_id);
+        const instrumentType = this.resolvePreferredValue(record?.instrument_type, record?.transaction_type);
+        const grantor = this.sanitizeValue(record?.Grantor);
+        const grantee = this.sanitizeValue(record?.Grantee);
+        const regDate = this.resolvePreferredValue(
+            record?.reg_date,
+            record?.reg_date_raw,
+            record?.assignment_date,
+            record?.assignment_date_raw
+        );
+        const serialNo = this.sanitizeValue(record?.serialNo);
+        const pageNo = this.sanitizeValue(record?.pageNo);
+        const volumeNo = this.sanitizeValue(record?.volumeNo);
+        const regNo = this.sanitizeValue(record?.regNo);
+        const comments = this.sanitizeValue(record?.comments);
+        const createdBy = this.sanitizeValue(record?.created_by);
+        const statusBadge = this.buildStatusBadge(record);
+
+        const columnConfigs = [
+            { kind: 'text', value: displayIndex.toString() },
+            { kind: 'editable', field: 'mlsFNo', value: fileNumber },
+            { kind: 'prop-id', value: propId, source: record?.prop_id_source },
+            { kind: 'editable', field: 'instrument_type', value: instrumentType },
+            { kind: 'editable', field: 'Grantor', value: grantor },
+            { kind: 'editable', field: 'Grantee', value: grantee },
+            { kind: 'editable', field: 'reg_date', value: regDate },
+            { kind: 'editable', field: 'serialNo', value: serialNo },
+            { kind: 'editable', field: 'pageNo', value: pageNo },
+            { kind: 'editable', field: 'volumeNo', value: volumeNo },
+            { kind: 'editable', field: 'regNo', value: regNo },
+            { kind: 'editable', field: 'comments', value: comments },
+            { kind: 'editable', field: 'created_by', value: createdBy },
+            { kind: 'status', html: statusBadge },
+            { kind: 'actions', typeKey: 'records', rowIndex: index }
+        ];
+
+        columnConfigs.forEach((config) => {
+            const td = document.createElement('td');
+            switch (config.kind) {
+                case 'text':
+                    td.textContent = config.value ?? '';
+                    break;
+                case 'editable':
+                    td.dataset.rawValue = config.value ?? '';
+                    if (config.badgeType) {
+                        td.dataset.badgeType = config.badgeType;
+                        td.innerHTML = this.renderEntityBadge(config.value, config.badgeType);
+                    } else {
+                        delete td.dataset.badgeType;
+                        td.textContent = config.value ?? '';
+                    }
+                    this.attachInlineEditing(td, 'records', index, config.field);
                     break;
                 case 'prop-id':
                     td.classList.add('text-nowrap');
@@ -1263,22 +1512,19 @@ class PropertyIndexCardImportManager {
 
         const fileNumber = this.sanitizeValue(record?.mlsfNo || record?.mlsFNo);
         const trackingId = this.sanitizeValue(record?.tracking_id);
-        const fileName = this.sanitizeValue(record?.FileName);
         const location = this.sanitizeValue(record?.location);
-        const type = this.sanitizeValue(record?.type);
         const source = this.sanitizeValue(record?.SOURCE || record?.source);
         const plotNo = this.sanitizeValue(record?.plot_no);
-        const propId = this.sanitizeValue(record?.prop_id);
         const createdBy = this.sanitizeValue(record?.created_by || record?.CreatedBy);
         const statusBadge = this.buildStatusBadge(record);
+        const grantee = this.sanitizeValue(record?.grantee || record?.FileName);
 
         const columnConfigs = [
             { kind: 'text', value: displayIndex.toString() },
             { kind: 'text', value: fileNumber },
             { kind: 'text', value: trackingId },
-            { kind: 'text', value: fileName },
+            { kind: 'text', value: grantee },
             { kind: 'text', value: location },
-            { kind: 'text', value: type },
             { kind: 'text', value: source },
             { kind: 'text', value: plotNo },
             { kind: 'text', value: createdBy },
@@ -1364,7 +1610,8 @@ class PropertyIndexCardImportManager {
             this.cancelInlineEdit(false);
         }
 
-        const originalValue = this.sanitizeValue(cell.textContent);
+        const rawFallback = typeof cell.dataset.rawValue === 'string' ? cell.dataset.rawValue : cell.textContent;
+        const originalValue = this.sanitizeValue(rawFallback);
         const input = document.createElement('input');
         input.type = 'text';
         input.className = 'form-control form-control-sm inline-edit-input';
@@ -1433,7 +1680,13 @@ class PropertyIndexCardImportManager {
 
         cell.classList.remove('inline-editing');
         cell.dataset.editing = 'false';
-        cell.textContent = sanitized;
+        const badgeType = cell.dataset.badgeType;
+        if (badgeType) {
+            cell.innerHTML = this.renderEntityBadge(sanitized, badgeType);
+        } else {
+            cell.textContent = sanitized ?? '';
+        }
+        cell.dataset.rawValue = sanitized ?? '';
 
         this.activeInlineEdit = null;
 
@@ -1445,7 +1698,13 @@ class PropertyIndexCardImportManager {
 
         await this.updateField(recordType, rowIndex, field, nextValue, {
             onError: () => {
-                cell.textContent = this.sanitizeValue(originalValue);
+                const fallback = this.sanitizeValue(originalValue);
+                cell.dataset.rawValue = fallback ?? '';
+                if (cell.dataset.badgeType) {
+                    cell.innerHTML = this.renderEntityBadge(fallback, cell.dataset.badgeType);
+                } else {
+                    cell.textContent = fallback ?? '';
+                }
             }
         });
 
@@ -1993,6 +2252,14 @@ class PropertyIndexCardImportManager {
         this.updateElementText('picShowingTotal', totalCount);
     }
 
+    updateShowingInfoForList(total) {
+        const count = Number(total) || 0;
+        const start = count === 0 ? 0 : 1;
+        this.updateElementText('picShowingStart', start);
+        this.updateElementText('picShowingEnd', count);
+        this.updateElementText('picShowingTotal', count);
+    }
+
     updateShowingInfoForQc(total) {
         const count = Number(total) || 0;
         const start = count === 0 ? 0 : 1;
@@ -2299,6 +2566,88 @@ class PropertyIndexCardImportManager {
                 alert.remove();
             }
         }, 6000);
+    }
+
+    exportToCSV() {
+        if (!this.sessionId || !this.propertyRecords.length) {
+            this.showAlert('No data available to export. Please upload a file first.', 'warning');
+            return;
+        }
+
+        try {
+            // Prepare CSV data from property records
+            const headers = [
+                'Row #',
+                'File Number',
+                'Prop ID',
+                'Transaction Type',
+                'Grantor',
+                'Grantee',
+                'Location',
+                'Assignment Date',
+                'Comments',
+                'Old KN No',
+                'serialNo',
+                'Page No',
+                'Volume No',
+                'Reg No',
+                'Remarks',
+                'Has Issues'
+            ];
+
+            const rows = this.propertyRecords.map((record, index) => {
+                return [
+                    index + 1,
+                    this.sanitizeValue(record?.mlsFNo),
+                    this.sanitizeValue(record?.prop_id),
+                    this.sanitizeValue(record?.transaction_type),
+                    this.sanitizeValue(record?.Grantor),
+                    this.sanitizeValue(record?.Grantee),
+                    this.sanitizeValue(record?.location || record?.property_description),
+                    this.sanitizeValue(record?.assignment_date),
+                    this.sanitizeValue(record?.comments),
+                    this.sanitizeValue(record?.oldKNNo),
+                    this.sanitizeValue(record?.serialNo),
+                    this.sanitizeValue(record?.pageNo),
+                    this.sanitizeValue(record?.volumeNo),
+                    this.sanitizeValue(record?.regNo),
+                    this.sanitizeValue(record?.remarks),
+                    record?.hasIssues ? 'Yes' : 'No'
+                ];
+            });
+
+            // Convert to CSV format
+            const csvContent = [
+                headers.join(','),
+                ...rows.map(row => row.map(cell => {
+                    // Escape cells that contain commas, quotes, or newlines
+                    const cellStr = String(cell || '');
+                    if (cellStr.includes(',') || cellStr.includes('"') || cellStr.includes('\n')) {
+                        return `"${cellStr.replace(/"/g, '""')}"`;
+                    }
+                    return cellStr;
+                }).join(','))
+            ].join('\n');
+
+            // Create download
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            const filename = `PIC_Export_${timestamp}.csv`;
+
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            this.showAlert(`Exported ${this.propertyRecords.length} records to ${filename}`, 'success');
+        } catch (error) {
+            console.error('Export failed:', error);
+            this.showAlert('Failed to export CSV. Please try again.', 'danger');
+        }
     }
 
     async importData() {

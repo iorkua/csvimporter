@@ -7,6 +7,7 @@
 #fileNumbersTable,
 #historyRecordsTable,
 #historyCofoTable,
+#historyOtherInstrumentsTable,
 #historyFileNumberQcTable,
 #historyMovementsTable,
 #historyNotesTable {
@@ -22,6 +23,8 @@
 #historyRecordsTable td,
 #historyCofoTable th,
 #historyCofoTable td,
+#historyOtherInstrumentsTable th,
+#historyOtherInstrumentsTable td,
 #historyFileNumberQcTable th,
 #historyFileNumberQcTable td,
 #historyMovementsTable th,
@@ -39,6 +42,7 @@
 #propertyRecordsTable th,
 #fileNumbersTable th,
 #historyRecordsTable th,
+#historyOtherInstrumentsTable th,
 #historyMovementsTable th,
 #historyNotesTable th {
     background-color: #343a40 !important;
@@ -50,6 +54,7 @@
 #propertyRecordsTable td,
 #fileNumbersTable td,
 #historyRecordsTable td,
+#historyOtherInstrumentsTable td,
 #historyMovementsTable td,
 #historyNotesTable td {
     border-color: #dee2e6;
