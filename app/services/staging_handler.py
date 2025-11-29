@@ -244,13 +244,14 @@ def extract_entity_and_customer_data(
                 continue
 
             descriptor_candidates = [
+                entity_name,
                 pic_grantee if is_pic else None,
                 pic_grantor if is_pic else None,
                 pra_grantee if is_pra else None,
-                assignor if is_file_history else None,
+                pra_grantor if is_pra else None,
                 assignee if is_file_history else None,
+                assignor if is_file_history else None,
                 _normalize_string(record.get('file_title')),
-                entity_name,
                 _normalize_string(record.get('customer_name')),
                 filename
             ]

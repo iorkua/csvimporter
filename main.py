@@ -18,7 +18,7 @@ import uuid
 import csv
 import io
 import zipfile
-from typing import List, Dict, Any, Optional, Tuple, Literal
+from typing import List, Dict, Any, Optional, Tuple, Literal, Set
 from datetime import datetime
 from app.models.database import get_db_connection, FileIndexing, SessionLocal
 from pydantic import BaseModel
@@ -27,20 +27,22 @@ from dateutil import parser as date_parser
 import uvicorn
 
 from app.services.file_indexing_service import (
+    _assign_property_ids,
     _build_cofo_record,
     _build_reg_no,
+    _classify_customer_type,
     _collapse_whitespace,
     _combine_location,
     _format_value,
+    _generate_tracking_id,
+    _get_next_property_id_counter,
     _has_cofo_payload,
     _normalize_numeric_field,
     _normalize_old_kn_number,
     _normalize_string,
+    _run_qc_validation,
     _strip_all_whitespace,
     _update_cofo,
-    _generate_tracking_id,
-    _run_qc_validation,
-    _classify_customer_type,
 )
 from app.services.staging_handler import (
     extract_entity_and_customer_data,
@@ -589,165 +591,6 @@ def _apply_ui_date_format_to_session_records(property_records: List[Dict[str, An
                 fmt_date(rec, f)
             for f in time_fields:
                 fmt_time(rec, f)
-
-
-def _assign_property_ids(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Assign property IDs to file numbers with duplicate prevention across all tables"""
-    property_assignments = []
-    property_counter = _get_next_property_id_counter()
-    file_number_prop_cache = {}  # Cache prop_ids assigned in this session
-    
-    for idx, record in enumerate(records):
-        file_number = _normalize_string(record.get('file_number'))
-        if not file_number:
-            continue
-        
-        # First check if we've already assigned a prop_id to this file_number in this session
-        if file_number in file_number_prop_cache:
-            existing_session_prop_id = file_number_prop_cache[file_number]
-            property_assignments.append({
-                'record_index': idx,
-                'file_number': file_number,
-                'property_id': existing_session_prop_id,
-                'status': 'session_reused',
-                'source_table': 'current_session'
-            })
-            record['prop_id'] = existing_session_prop_id
-            continue
-        
-        # Check if property ID already exists for this file number in database
-        existing_prop_id = _find_existing_property_id(file_number)
-        
-        if existing_prop_id:
-            property_assignments.append({
-                'record_index': idx,
-                'file_number': file_number,
-                'property_id': existing_prop_id,
-                'status': 'existing',
-                'source_table': 'existing_lookup'
-            })
-            record['prop_id'] = existing_prop_id
-            # Cache this assignment for potential reuse in the same session
-            file_number_prop_cache[file_number] = existing_prop_id
-        else:
-            # Generate new property ID (simple number)
-            new_prop_id = str(property_counter)
-            property_counter += 1
-            
-            property_assignments.append({
-                'record_index': idx,
-                'file_number': file_number,
-                'property_id': new_prop_id,
-                'status': 'new',
-                'source_table': 'file_indexings'
-            })
-            record['prop_id'] = new_prop_id
-            # Cache this assignment for potential reuse in the same session
-            file_number_prop_cache[file_number] = new_prop_id
-    
-    return property_assignments
-
-
-def _get_next_property_id_counter() -> int:
-    """Get the next available property ID counter by finding the highest existing prop_id across all tables"""
-    db = SessionLocal()
-    try:
-        max_prop_id = 0
-        
-        # Check all tables that have prop_id column
-        tables_to_check = [
-            (FileIndexing, FileIndexing.prop_id),
-            (CofO, CofO.prop_id),
-        ]
-        
-        # Also check property_records and registered_instruments using raw SQL
-        # since they're not in our SQLAlchemy models
-        from sqlalchemy import text
-        
-        # Check property_records table
-        try:
-            result = db.execute(text("SELECT MAX(CAST(prop_id AS INT)) FROM property_records WHERE prop_id IS NOT NULL AND ISNUMERIC(prop_id) = 1"))
-            value = result.scalar()
-            if value is not None:
-                max_prop_id = max(max_prop_id, value)
-        except Exception:
-            pass  # Table might not exist or prop_id might not be numeric
-            
-        # Check registered_instruments table
-        try:
-            result = db.execute(text("SELECT MAX(CAST(prop_id AS INT)) FROM registered_instruments WHERE prop_id IS NOT NULL AND ISNUMERIC(prop_id) = 1"))
-            value = result.scalar()
-            if value is not None:
-                max_prop_id = max(max_prop_id, value)
-        except Exception:
-            pass  # Table might not exist or prop_id might not be numeric
-        
-        # Check SQLAlchemy model tables
-        for model_class, prop_id_column in tables_to_check:
-            try:
-                # Query for max numeric prop_id values
-                result = db.query(prop_id_column).filter(
-                    prop_id_column.isnot(None)
-                ).all()
-                
-                # Convert to integers and find max
-                for (prop_id,) in result:
-                    if prop_id and str(prop_id).isdigit():
-                        max_prop_id = max(max_prop_id, int(prop_id))
-            except Exception:
-                continue  # Skip if column doesn't exist or other issues
-        
-        return max_prop_id + 1
-        
-    finally:
-        db.close()
-
-
-def _find_existing_property_id(file_number: str) -> Optional[str]:
-    """Find existing property ID for a file number across all tables"""
-    db = SessionLocal()
-    try:
-        from sqlalchemy import text
-        
-        # Check in CofO table first
-        cofo_record = db.query(CofO).filter(CofO.mls_fno == file_number).first()
-        if cofo_record and hasattr(cofo_record, 'prop_id') and cofo_record.prop_id:
-            return cofo_record.prop_id
-        
-        # Check in FileIndexing table
-        file_record = db.query(FileIndexing).filter(FileIndexing.file_number == file_number).first()
-        if file_record and hasattr(file_record, 'prop_id') and file_record.prop_id:
-            return file_record.prop_id
-        
-        # Check in property_records table using raw SQL
-        try:
-            result = db.execute(text("""
-                SELECT prop_id FROM property_records 
-                WHERE mlsFNo = :file_number AND prop_id IS NOT NULL
-                ORDER BY created_at DESC
-            """), {'file_number': file_number})
-            prop_record = result.first()
-            if prop_record and prop_record[0]:
-                return str(prop_record[0])
-        except Exception:
-            pass  # Table might not exist or query failed
-            
-        # Check in registered_instruments table using raw SQL
-        try:
-            result = db.execute(text("""
-                SELECT prop_id FROM registered_instruments 
-                WHERE MLSFileNo = :file_number AND prop_id IS NOT NULL
-                ORDER BY created_at DESC
-            """), {'file_number': file_number})
-            reg_record = result.first()
-            if reg_record and reg_record[0]:
-                return str(reg_record[0])
-        except Exception:
-            pass  # Table might not exist or query failed
-        
-        return None
-    finally:
-        db.close()
 
 
 # ========== QC API ENDPOINTS ========== 
@@ -2130,6 +1973,66 @@ async def clear_pic_data(request: PICClearDataRequest):
         db.close()
 
 
+def _collect_normalized_file_number_keys(values: List[Optional[str]]) -> List[str]:
+    """Return ordered, duplicate-free normalized keys for the provided file numbers."""
+    normalized: List[str] = []
+    seen: Set[str] = set()
+
+    for value in values or []:
+        key = _normalize_file_number_key(value)
+        if key and key not in seen:
+            normalized.append(key)
+            seen.add(key)
+
+    return normalized
+
+
+def _prefetch_existing_pic_cofo_keys(db, file_numbers: List[Optional[str]], test_control: str) -> Set[str]:
+    """Fetch existing CofO normalized file-number keys in bulk for fast duplicate checks."""
+    normalized_keys = _collect_normalized_file_number_keys(file_numbers)
+    if not normalized_keys:
+        return set()
+
+    normalized_column = func.upper(func.replace(CofO.mls_fno, ' ', ''))
+    existing: Set[str] = set()
+    chunk_size = 500
+
+    for start in range(0, len(normalized_keys), chunk_size):
+        chunk = normalized_keys[start:start + chunk_size]
+        rows = (
+            db.query(normalized_column)
+            .filter(CofO.test_control == test_control)
+            .filter(normalized_column.in_(chunk))
+            .all()
+        )
+        existing.update(value for (value,) in rows if value)
+
+    return existing
+
+
+def _prefetch_existing_pic_file_number_keys(db, file_numbers: List[Optional[str]], test_control: str) -> Set[str]:
+    """Fetch existing fileNumber normalized keys in bulk for fast duplicate checks."""
+    normalized_keys = _collect_normalized_file_number_keys(file_numbers)
+    if not normalized_keys:
+        return set()
+
+    normalized_column = func.upper(func.replace(FileNumber.mlsf_no, ' ', ''))
+    existing: Set[str] = set()
+    chunk_size = 500
+
+    for start in range(0, len(normalized_keys), chunk_size):
+        chunk = normalized_keys[start:start + chunk_size]
+        rows = (
+            db.query(normalized_column)
+            .filter(FileNumber.test_control == test_control)
+            .filter(normalized_column.in_(chunk))
+            .all()
+        )
+        existing.update(value for (value,) in rows if value)
+
+    return existing
+
+
 @app.post("/api/import-pic/{session_id}")
 async def import_pic(session_id: str):
     """Commit PIC records into pic and CofO_staging tables."""
@@ -2154,6 +2057,17 @@ async def import_pic(session_id: str):
 
         _synchronize_pic_cofo_visibility(property_records, cofo_records)
         file_number_records = _deduplicate_pic_file_numbers(file_number_records)
+
+        existing_cofo_keys = _prefetch_existing_pic_cofo_keys(
+            db,
+            [record.get('mlsFNo') for record in cofo_records],
+            test_control
+        )
+        existing_file_number_keys = _prefetch_existing_pic_file_number_keys(
+            db,
+            [(record.get('mlsfNo') or record.get('mlsFNo')) for record in file_number_records],
+            test_control
+        )
 
         for record in property_records:
             if record.get('hasIssues'):
@@ -2209,7 +2123,8 @@ async def import_pic(session_id: str):
                 skipped_invalid_cofo += 1
                 continue
 
-            if _pic_cofo_exists(db, file_number):
+            normalized_key = _normalize_file_number_key(file_number)
+            if normalized_key and normalized_key in existing_cofo_keys:
                 if file_number not in skipped_duplicate_cofo:
                     skipped_duplicate_cofo.append(file_number)
                 continue
@@ -2239,6 +2154,8 @@ async def import_pic(session_id: str):
             )
 
             db.add(cofo_entry)
+            if normalized_key:
+                existing_cofo_keys.add(normalized_key)
 
             cofo_records_count += 1
 
@@ -2250,12 +2167,15 @@ async def import_pic(session_id: str):
             file_number_value = _normalize_string(record.get('mlsfNo') or record.get('mlsFNo'))
             if not file_number_value:
                 continue
-            if _pic_file_number_exists(db, file_number_value):
+            normalized_key = _normalize_file_number_key(file_number_value)
+            if normalized_key and normalized_key in existing_file_number_keys:
                 if file_number_value not in skipped_duplicate_file_numbers:
                     skipped_duplicate_file_numbers.append(file_number_value)
                 continue
             if _import_pic_file_number_record(db, record, now, test_control):
                 file_number_upserts += 1
+                if normalized_key:
+                    existing_file_number_keys.add(normalized_key)
 
         # Import staging data (entities and customers with reason_retired)
         staging_result = perform_staging_import(
@@ -3568,24 +3488,6 @@ def _normalize_file_number_key(value: Optional[str]) -> Optional[str]:
     return collapsed.upper()
 
 
-def _pic_file_number_exists(db, file_number: Optional[str]) -> bool:
-    """Check if a file number already exists (ignoring whitespace/case)."""
-    key = _normalize_file_number_key(file_number)
-    if not key:
-        return False
-    normalized_column = func.upper(func.replace(FileNumber.mlsf_no, ' ', ''))
-    return db.query(FileNumber.id).filter(normalized_column == key).first() is not None
-
-
-def _pic_cofo_exists(db, file_number: Optional[str]) -> bool:
-    """Check if a CofO entry already exists for the given file number."""
-    key = _normalize_file_number_key(file_number)
-    if not key:
-        return False
-    normalized_column = func.upper(func.replace(CofO.mls_fno, ' ', ''))
-    return db.query(CofO.id).filter(normalized_column == key).first() is not None
-
-
 def _import_pic_file_number_record(
     db,
     record: Dict[str, Any],
@@ -3990,6 +3892,17 @@ def _run_pic_qc_validation(records: List[Dict[str, Any]]) -> Dict[str, List[Dict
 
     file_numbers = [{'mlsfNo': record.get('mlsFNo')} for record in records]
     qc_issues, _ = _build_pra_file_number_qc(file_numbers)
+    spacing_issues = qc_issues.get('spacing')
+    if spacing_issues:
+        filtered_spacing = []
+        for issue in spacing_issues:
+            file_number = issue.get('file_number') if isinstance(issue, dict) else None
+            normalized = _normalize_string(file_number)
+            normalized_upper = normalized.upper() if normalized else ''
+            if normalized_upper.startswith('KN ') and re.match(r'^KN\s+\d', normalized_upper):
+                continue
+            filtered_spacing.append(issue)
+        qc_issues['spacing'] = filtered_spacing
     return qc_issues
 
 
